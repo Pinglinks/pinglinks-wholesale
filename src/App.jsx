@@ -642,7 +642,7 @@ function LoginPage({ customers, setCustomers, onLogin }) {
   const [reg,setReg]=useState({name:"",company:"",taxId:"",email:"",password:"",confirm:""});
 
   // Admin hardcoded for demo
-  const ADMIN = { id:"admin", name:"Admin", email:"info@pinglinkscellular.com", password:"PingB2B!", role:"admin", approved:true };
+  const ADMIN = { id:"admin", name:"Admin", email:"admin@pinglinkscellular.com", password:"admin123", role:"admin", approved:true };
 
   const doLogin = () => {
     setErr("");
@@ -660,6 +660,12 @@ function LoginPage({ customers, setCustomers, onLogin }) {
     if (customers.find(c=>c.email===reg.email)) { setErr("Email already registered."); return; }
     const nc = { id:`c${Date.now()}`, name:reg.name, company:reg.company, tax_id:reg.taxId, email:reg.email, password:reg.password, role:"buyer", customer_type:null, approved:false, discount_pct:0, min_order_value:0, created_at:today() };
     setCustomers(p=>[...p,nc]);
+    // Send email notification directly to Edge Function
+    fetch(`${SUPABASE_URL}/functions/v1/notify-admin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({ customerName: reg.name, company: reg.company, email: reg.email })
+    }).catch(()=>{});
     setSuccess("✅ Application submitted! We'll review and activate your account.");
   };
 
@@ -681,6 +687,7 @@ function LoginPage({ customers, setCustomers, onLogin }) {
             <div className="form-group"><label>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
             <div className="form-group"><label>Password</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
             <button className="btn btn-primary" style={{width:"100%",justifyContent:"center"}} onClick={doLogin}>Sign In →</button>
+            <div style={{marginTop:12,fontSize:11,color:"var(--text3)",textAlign:"center"}}>Demo admin: admin@pinglinkscellular.com / admin123</div>
           </>}
           {tab==="register"&&!success&&<>
             <div className="alert alert-info">Wholesale accounts require approval and business verification.</div>
