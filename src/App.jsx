@@ -642,7 +642,7 @@ function LoginPage({ customers, setCustomers, onLogin }) {
   const [reg,setReg]=useState({name:"",company:"",taxId:"",email:"",password:"",confirm:""});
 
   // Admin hardcoded for demo
-  const ADMIN = { id:"admin", name:"Admin", email:"admin@pinglinkscellular.com", password:"PingB2B!", role:"admin", approved:true };
+  const ADMIN = { id:"admin", name:"Admin", email:"info@pinglinkscellular.com", password:"PingB2B!", role:"admin", approved:true };
 
   const doLogin = () => {
     setErr("");
@@ -681,7 +681,7 @@ function LoginPage({ customers, setCustomers, onLogin }) {
             <div className="form-group"><label>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
             <div className="form-group"><label>Password</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
             <button className="btn btn-primary" style={{width:"100%",justifyContent:"center"}} onClick={doLogin}>Sign In →</button>
-            <div style={{marginTop:12,fontSize:11,color:"var(--text3)",textAlign:"center"}}>Demo admin: admin@pinglinkscellular.com / PingB2B!</div>
+            <div style={{marginTop:12,fontSize:11,color:"var(--text3)",textAlign:"center"}}>Demo admin: info@pinglinkscellular.com / PingB2B!</div>
           </>}
           {tab==="register"&&!success&&<>
             <div className="alert alert-info">Wholesale accounts require approval and business verification.</div>
