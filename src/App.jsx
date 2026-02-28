@@ -1058,7 +1058,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
       <div className="filter-bar">
         <div className="search-wrap" style={{flex:2}}>
           <span className="search-icon">🔍</span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, SKU, barcode, brand…"/>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, barcode, brand…"/>
         </div>
         <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{width:"auto"}}>
           {allCats.map(c=><option key={c}>{c}</option>)}
@@ -1095,7 +1095,6 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
           <table>
             <thead><tr>
               <th><input type="checkbox" onChange={e=>e.target.checked?selectAll():clearSelect()}/></th>
-              <SortTh label="SKU" sortKey="sku" current={key} dir={dir} onToggle={toggle}/>
               <th>Barcode</th>
               <SortTh label="Brand" sortKey="brand" current={key} dir={dir} onToggle={toggle}/>
               <SortTh label="Name" sortKey="name" current={key} dir={dir} onToggle={toggle}/>
@@ -1115,7 +1114,6 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
                 return (
                   <tr key={p.id} style={{opacity:p.active?1:.5}}>
                     <td><input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggleSelect(p.id)}/></td>
-                    <td><code>{p.sku}</code></td>
                     <td><code style={{fontSize:10}}>{p.barcode||"—"}</code></td>
                     <td style={{fontSize:12}}>{p.brand||"—"}</td>
                     <td>
@@ -1148,7 +1146,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
                   </tr>
                 );
               })}
-              {pg.sliced.length===0&&<tr><td colSpan={14} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No products found.</td></tr>}
+              {pg.sliced.length===0&&<tr><td colSpan={13} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No products found.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1399,9 +1397,14 @@ function SuppliersPage({ suppliers, setSuppliers, products, showToast }) {
 
   const supplierProducts = (sid)=>products.filter(p=>p.supplier_id===sid&&p.active);
 
-  const save=(data)=>{
-    if(editing) setSuppliers(p=>p.map(s=>s.id===editing.id?{...s,...data}:s));
-    else setSuppliers(p=>[...p,{...data,id:`s${Date.now()}`}]);
+  const save=async(data)=>{
+    if(editing){
+      await supabase.from("suppliers").update(data).eq("id",editing.id);
+      setSuppliers(p=>p.map(s=>s.id===editing.id?{...s,...data}:s));
+    } else {
+      const {data:saved} = await supabase.from("suppliers").insert(data).select().single();
+      if(saved) setSuppliers(p=>[...p,saved]);
+    }
     showToast(editing?"Supplier updated":"Supplier added"); setShow(false);
   };
 
@@ -1427,7 +1430,7 @@ function SuppliersPage({ suppliers, setSuppliers, products, showToast }) {
                   <td style={{color:"var(--accent)"}}>{fmt(cost)}</td>
                   <td><div className="tbl-actions">
                     <button className="btn btn-secondary btn-xs" onClick={()=>{setEditing(s);setShow(true);}}>Edit</button>
-                    <button className="btn btn-danger btn-xs" onClick={()=>{if(window.confirm("Delete supplier?"))setSuppliers(p=>p.filter(x=>x.id!==s.id));}}>Del</button>
+                    <button className="btn btn-danger btn-xs" onClick={async()=>{if(window.confirm("Delete supplier?")){await supabase.from("suppliers").delete().eq("id",s.id);setSuppliers(p=>p.filter(x=>x.id!==s.id));}}}>Del</button>
                   </div></td>
                 </tr>
               );
@@ -1492,14 +1495,24 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
     showToast("Count sheet downloaded");
   };
 
-  const applyCount = () => {
+  const applyCount = async () => {
     const items=Object.entries(counts).filter(([,v])=>v!=="").map(([id,counted])=>{
       const p=products.find(x=>x.id===id);
-      return {product_id:id,expected:p?.stock||0,counted:+counted,variance:+counted-(p?.stock||0)};
+      return {product_id:id,product_name:p?.name||"",expected:p?.stock||0,counted:+counted,variance:+counted-(p?.stock||0)};
     });
     if(!items.length){showToast("No counts entered","err");return;}
-    const st={id:genId("ST",stockTakes),date:today(),status:"completed",items,notes};
-    setStockTakes(p=>[st,...p]);
+    const stId=genId("ST",stockTakes);
+    // Save stock take to Supabase
+    const {data:st} = await supabase.from("stock_takes").insert({id:stId,date:today(),status:"completed",notes}).select().single();
+    if(st){
+      await supabase.from("stock_take_items").insert(items.map(i=>({...i,stock_take_id:stId})));
+      setStockTakes(p=>[{...st,items},...p]);
+    }
+    // Update stock levels in Supabase
+    for(const [id,c] of Object.entries(counts)){
+      if(c==="") continue;
+      await supabase.from("products").update({stock:+c}).eq("id",id);
+    }
     setProducts(p=>p.map(x=>{const c=counts[x.id];return c!==undefined&&c!==""?{...x,stock:+c}:x;}));
     setCounts({}); setNotes("");
     showToast(`Stock take completed — ${items.length} items adjusted`);
@@ -1628,12 +1641,24 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
   };
   const updateItem=(pid,qty)=>{ if(+qty<=0)setItems(p=>p.filter(i=>i.pid!==pid));else setItems(p=>p.map(i=>i.pid===pid?{...i,qty:Math.min(+qty,i.maxQty)}:i)); };
 
-  const createTransfer=()=>{
+  const createTransfer=async()=>{
     if(!items.length){showToast("Add items first","err");return;}
     const store=stores.find(s=>s.id===selectedStore);
     const id=genId(settings.transfer_prefix||"TRF",transfers);
-    const tr={id,store_id:selectedStore,store_name:store?.name||"",date:today(),items:items.map(i=>({product_id:i.pid,name:i.name,sku:i.sku,barcode:i.barcode,qty:i.qty,cost:i.cost})),total_cost:items.reduce((s,i)=>s+i.cost*i.qty,0),notes};
-    setTransfers(p=>[tr,...p]);
+    const trItems=items.map(i=>({product_id:i.pid,name:i.name,barcode:i.barcode,qty:i.qty,cost:i.cost}));
+    const total=items.reduce((s,i)=>s+i.cost*i.qty,0);
+    // Save transfer to Supabase
+    const {data:tr} = await supabase.from("transfers").insert({id,store_id:selectedStore,store_name:store?.name||"",date:today(),total_cost:total,notes}).select().single();
+    if(tr){
+      await supabase.from("transfer_items").insert(trItems.map(i=>({...i,transfer_id:id})));
+      setTransfers(p=>[{...tr,items:trItems},...p]);
+    }
+    // Update stock in Supabase
+    for(const i of items){
+      const prod=products.find(x=>x.id===i.pid);
+      const newStock=Math.max(0,(prod?.stock||0)-i.qty);
+      await supabase.from("products").update({stock:newStock}).eq("id",i.pid);
+    }
     setProducts(p=>p.map(x=>{const ci=items.find(i=>i.pid===x.id);return ci?{...x,stock:Math.max(0,x.stock-ci.qty)}:x;}));
     setItems([]); setNotes("");
     showToast(`Transfer ${id} created`);
@@ -2319,7 +2344,7 @@ function SettingsPage({ settings, setSettings, showToast }) {
 
           <div className="divider"/>
           <div style={{display:"flex",justifyContent:"flex-end"}}>
-            <button className="btn btn-primary" onClick={()=>{ setSettings(f); showToast("Settings saved"); }}>Save Settings</button>
+            <button className="btn btn-primary" onClick={async()=>{ await supabase.from("site_settings").update(f).eq("id",1); setSettings(f); showToast("Settings saved"); }}>Save Settings</button>
           </div>
         </div>
       </div>
