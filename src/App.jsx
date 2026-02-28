@@ -983,6 +983,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
   const [showModal,setShowModal]=useState(false);
   const [editing,setEditing]=useState(null);
   const [showImport,setShowImport]=useState(false);
+  const [showHistory,setShowHistory]=useState(null);
 
   const filtered = useMemo(()=>products.filter(p=>{
     const q=search.toLowerCase();
