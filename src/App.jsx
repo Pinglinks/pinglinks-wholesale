@@ -357,6 +357,29 @@ td{padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:13px}
   <tr class="grand-total"><td><strong>Total</strong></td><td style="text-align:right"><strong>${fmt(order.total)}</strong></td></tr>
 </table>
 ${order.notes?`<div style="margin-top:16px;padding:12px;background:#f7fafc;border-radius:6px"><strong>Notes:</strong> ${order.notes}</div>`:""}
+
+${(settings.bank_name||settings.payment_link)?`
+<div style="margin-top:28px;border-top:2px solid #e2e8f0;padding-top:20px;display:grid;grid-template-columns:${settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr"};gap:20px">
+  ${settings.bank_name?`
+  <div style="background:#f7fafc;border-radius:8px;padding:14px 16px">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#718096;margin-bottom:10px">🏦 Bank Transfer Details</div>
+    <table style="width:auto;margin:0"><tbody>
+      <tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Bank:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_name}</td></tr>
+      ${settings.bank_account_name?`<tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Account Name:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_account_name}</td></tr>`:""}
+      ${settings.bank_account_number?`<tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Account #:</td><td style="font-weight:700;font-size:13px;font-family:monospace;letter-spacing:1px;border:none">${settings.bank_account_number}</td></tr>`:""}
+      ${settings.bank_routing?`<tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Sort Code:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_routing}</td></tr>`:""}
+    </tbody></table>
+    ${settings.bank_notes?`<div style="margin-top:8px;font-size:11px;color:#00d4a8;font-style:italic">${settings.bank_notes}</div>`:""}
+  </div>`:""}
+  ${settings.payment_link?`
+  <div style="background:#f7fafc;border-radius:8px;padding:14px 16px;text-align:center">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#718096;margin-bottom:8px">💳 Online Payment</div>
+    <div style="font-size:20px;font-weight:700;color:#1a202c;margin-bottom:12px">${fmt(order.total)}</div>
+    <a href="${settings.payment_link}" style="display:inline-block;padding:10px 24px;background:#00d4a8;color:#fff;border-radius:8px;font-weight:700;font-size:13px;text-decoration:none">${settings.payment_link_label||"Pay Now"} →</a>
+    <div style="font-size:10px;color:#718096;margin-top:6px;word-break:break-all">${settings.payment_link}</div>
+  </div>`:""}
+</div>`:""}
+
 <div class="footer">${settings.company_name} · ${settings.company_address} · ${settings.company_phone}</div>
 </body></html>`;
 }
@@ -3399,6 +3422,26 @@ function SettingsPage({ settings, setSettings, showToast }) {
           </div>
 
           <div className="divider"/>
+          <div className="section-title" style={{marginBottom:14}}>💳 Payment Information</div>
+          <div className="alert alert-info" style={{marginBottom:12,fontSize:12}}>This info appears on every customer invoice — both when viewed online and when printed.</div>
+          <div className="form-row">
+            <div className="form-group"><label>Bank Name</label><input value={f.bank_name||""} onChange={e=>s("bank_name",e.target.value)} placeholder="e.g. NCB, Scotiabank"/></div>
+            <div className="form-group"><label>Account Name</label><input value={f.bank_account_name||""} onChange={e=>s("bank_account_name",e.target.value)} placeholder="e.g. Pinglinks Cellular Ltd"/></div>
+          </div>
+          <div className="form-row">
+            <div className="form-group"><label>Account Number</label><input value={f.bank_account_number||""} onChange={e=>s("bank_account_number",e.target.value)} placeholder="e.g. 123456789"/></div>
+            <div className="form-group"><label>Routing / Sort Code</label><input value={f.bank_routing||""} onChange={e=>s("bank_routing",e.target.value)} placeholder="Optional"/></div>
+          </div>
+          <div className="form-group"><label>Additional Banking Notes</label><input value={f.bank_notes||""} onChange={e=>s("bank_notes",e.target.value)} placeholder="e.g. Please use invoice number as reference"/></div>
+          <div className="form-group"><label>Payment Link URL</label>
+            <input value={f.payment_link||""} onChange={e=>s("payment_link",e.target.value)} placeholder="e.g. https://lynk.com/pinglinks or https://paypal.me/pinglinks"/>
+            <div className="input-hint">Customers will see a clickable "Pay Now" button on their invoice</div>
+          </div>
+          <div className="form-group"><label>Payment Link Label</label>
+            <input value={f.payment_link_label||""} onChange={e=>s("payment_link_label",e.target.value)} placeholder="e.g. Pay via Lynk, Pay with PayPal"/>
+          </div>
+
+          <div className="divider"/>
           <div style={{display:"flex",justifyContent:"flex-end"}}>
             <button className="btn btn-primary" onClick={async()=>{ await supabase.from("site_settings").update(f).eq("id",1); setSettings(f); showToast("Settings saved"); }}>Save Settings</button>
           </div>
@@ -3859,6 +3902,35 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
         </div>
         {order.notes&&<div style={{marginTop:12,padding:12,background:"var(--bg3)",borderRadius:7,fontSize:12,color:"var(--text2)"}}><strong>Notes:</strong> {order.notes}</div>}
         {order.type==="consignment"&&order.consignment_due&&<div style={{marginTop:8,fontSize:12,color:"var(--warn)"}}>📋 Consignment settlement due: {order.consignment_due}</div>}
+
+        {/* Bank transfer + payment link */}
+        {(settings.bank_name||settings.payment_link)&&(
+          <div style={{marginTop:20,borderTop:"2px solid var(--border)",paddingTop:16,display:"grid",gridTemplateColumns:settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr",gap:16}}>
+            {settings.bank_name&&(
+              <div style={{background:"var(--bg3)",borderRadius:8,padding:"14px 16px"}}>
+                <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:"var(--text3)",marginBottom:10}}>🏦 Bank Transfer Details</div>
+                <div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:"4px 12px",fontSize:13}}>
+                  <span style={{color:"var(--text3)"}}>Bank:</span><span style={{fontWeight:600}}>{settings.bank_name}</span>
+                  {settings.bank_account_name&&<><span style={{color:"var(--text3)"}}>Account Name:</span><span style={{fontWeight:600}}>{settings.bank_account_name}</span></>}
+                  {settings.bank_account_number&&<><span style={{color:"var(--text3)"}}>Account #:</span><span style={{fontWeight:600,fontFamily:"monospace",letterSpacing:1}}>{settings.bank_account_number}</span></>}
+                  {settings.bank_routing&&<><span style={{color:"var(--text3)"}}>Sort Code:</span><span style={{fontWeight:600}}>{settings.bank_routing}</span></>}
+                </div>
+                {settings.bank_notes&&<div style={{marginTop:8,fontSize:11,color:"var(--accent)",fontStyle:"italic"}}>{settings.bank_notes}</div>}
+              </div>
+            )}
+            {settings.payment_link&&(
+              <div style={{background:"var(--bg3)",borderRadius:8,padding:"14px 16px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
+                <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:"var(--text3)"}}>💳 Online Payment</div>
+                <div style={{fontSize:22,fontWeight:700,color:"var(--accent)"}}>{fmt(order.total)}</div>
+                <a href={settings.payment_link} target="_blank" rel="noopener noreferrer"
+                  style={{display:"inline-block",padding:"10px 24px",background:"var(--accent)",color:"#fff",borderRadius:8,fontWeight:700,fontSize:14,textDecoration:"none",textAlign:"center",width:"100%",boxSizing:"border-box"}}>
+                  {settings.payment_link_label||"Pay Now"} →
+                </a>
+                <div style={{fontSize:10,color:"var(--text3)",wordBreak:"break-all"}}>{settings.payment_link}</div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div></div>
   );
