@@ -76,11 +76,11 @@ const STYLES = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#0a0c10;--bg2:#111318;--bg3:#181b22;--bg4:#1e2230;
-  --border:#1e2230;--border2:#252a3a;
-  --accent:#00d4a8;--accent2:#0099ff;--accent3:#ff6b35;--accent4:#a855f7;
-  --text:#e8eaf0;--text2:#8a8fa8;--text3:#50556a;
-  --danger:#ff4466;--warn:#ffaa00;--success:#00d4a8;
+  --bg:#f0f2f5;--bg2:#ffffff;--bg3:#f5f6f8;--bg4:#eceef2;
+  --border:#e0e3ea;--border2:#d0d4de;
+  --accent:#1a6fc4;--accent2:#0ea5e9;--accent3:#f97316;--accent4:#8b5cf6;
+  --text:#1a1d2e;--text2:#4a5068;--text3:#8a90a8;
+  --danger:#dc2626;--warn:#d97706;--success:#059669;
   --radius:10px;--radius-lg:14px;
 }
 html{font-size:14px}
@@ -100,11 +100,11 @@ button{font-family:inherit;cursor:pointer}
 .nav-label{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);padding:0 8px;margin-bottom:6px}
 .nav-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:7px;font-size:13px;color:var(--text2);border:none;background:none;width:100%;text-align:left;transition:all .15s;cursor:pointer}
 .nav-item:hover{background:var(--bg3);color:var(--text)}
-.nav-item.active{background:rgba(0,212,168,.12);color:var(--accent)}
+.nav-item.active{background:rgba(26,111,196,.1);color:var(--accent)}
 .nav-item .ni{font-size:15px;width:18px;text-align:center;flex-shrink:0}
 .sidebar-footer{padding:12px 10px;border-top:1px solid var(--border);flex-shrink:0}
 .user-chip{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:7px;margin-bottom:6px}
-.avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#000;flex-shrink:0}
+.avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff;flex-shrink:0}
 .main{margin-left:220px;flex:1;display:flex;flex-direction:column;min-height:100vh}
 .topbar{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--border);background:var(--bg2);position:sticky;top:0;z-index:50;flex-shrink:0}
 .topbar-title{font-family:'Syne',sans-serif;font-weight:700;font-size:17px}
@@ -112,7 +112,7 @@ button{font-family:inherit;cursor:pointer}
 
 /* ── Buttons ── */
 .btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border-radius:7px;font-size:13px;font-weight:500;border:none;transition:all .15s;white-space:nowrap;cursor:pointer}
-.btn-primary{background:var(--accent);color:#000}.btn-primary:hover{background:#00f0c0}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:#1558a0}
 .btn-secondary{background:var(--bg3);color:var(--text);border:1px solid var(--border)}.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
 .btn-danger{background:rgba(255,68,102,.12);color:var(--danger);border:1px solid rgba(255,68,102,.25)}.btn-danger:hover{background:rgba(255,68,102,.2)}
 .btn-ghost{background:transparent;color:var(--text2)}.btn-ghost:hover{background:var(--bg3);color:var(--text)}
@@ -144,15 +144,15 @@ button{font-family:inherit;cursor:pointer}
 .tbl-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse}
 th{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text3);padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
-td{padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(30,34,48,.5);vertical-align:middle}
+td{padding:10px 12px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
-tbody tr:hover td{background:rgba(255,255,255,.02)}
+tbody tr:hover td{background:rgba(26,111,196,.04)}
 .tbl-actions{display:flex;gap:4px}
 th.sortable{cursor:pointer;user-select:none}.th.sortable:hover{color:var(--text)}
 
 /* ── Badges ── */
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500;white-space:nowrap}
-.bg{background:rgba(0,212,168,.12);color:var(--accent)}
+.bg{background:rgba(5,150,105,.12);color:var(--success)}
 .bb{background:rgba(0,153,255,.12);color:var(--accent2)}
 .bo{background:rgba(255,107,53,.12);color:var(--accent3)}
 .bp{background:rgba(168,85,247,.12);color:var(--accent4)}
@@ -175,8 +175,8 @@ textarea{resize:vertical;min-height:70px}
 .input-hint{font-size:11px;color:var(--text3);margin-top:3px}
 
 /* ── Modals ── */
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px;backdrop-filter:blur(4px)}
-.modal{background:var(--bg2);border:1px solid var(--border);border-radius:16px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.6)}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px;backdrop-filter:blur(4px)}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:16px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.15)}
 .modal-sm{max-width:440px}.modal-md{max-width:580px}.modal-lg{max-width:800px}.modal-xl{max-width:1000px}
 .modal-head{padding:20px 20px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg2);z-index:1}
 .modal-head h2{font-size:16px}
@@ -186,15 +186,15 @@ textarea{resize:vertical;min-height:70px}
 .xbtn:hover{color:var(--text);background:var(--bg3)}
 
 /* ── Login ── */
-.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);background-image:radial-gradient(ellipse at 20% 50%,rgba(0,212,168,.05) 0%,transparent 50%),radial-gradient(ellipse at 80% 20%,rgba(0,153,255,.05) 0%,transparent 50%)}
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#e8f0fb 0%,#f0f2f5 50%,#e8f4fd 100%)}
 .login-box{width:100%;max-width:400px;padding:20px}
 .login-logo{text-align:center;margin-bottom:32px}
 .login-logo img{object-fit:contain}
 .login-logo .ls{font-size:11px;color:var(--text3);letter-spacing:3px;text-transform:uppercase;margin-top:3px}
-.login-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:28px;box-shadow:0 24px 60px rgba(0,0,0,.4)}
+.login-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:28px;box-shadow:0 8px 32px rgba(0,0,0,.12)}
 .ltabs{display:flex;gap:3px;background:var(--bg3);border-radius:7px;padding:3px;margin-bottom:20px}
 .ltab{flex:1;padding:7px;text-align:center;border-radius:5px;font-size:12px;font-weight:500;color:var(--text2);border:none;background:none;cursor:pointer;font-family:inherit;transition:all .15s}
-.ltab.active{background:var(--bg2);color:var(--accent);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.ltab.active{background:var(--bg2);color:var(--accent);box-shadow:0 2px 8px rgba(0,0,0,.1)}
 
 /* ── Alerts ── */
 .alert{padding:10px 14px;border-radius:7px;font-size:13px;margin-bottom:14px}
