@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 // ─── SUPABASE CONFIG ───────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://hzykmhxsilbfkgzjkqoy.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6eWttaHhzaWxiZmtnemprcW95Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxNjI4NDQsImV4cCI6MjA4NzczODg0NH0.jQ_Pey7cYwe6ZyqiMLMvnCj_FPdEuN9OXRAEqeFbYQQ";
+const SUPABASE_ANON_KEY = "ANON_KEY_PLACEHOLDER";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -1009,36 +1009,43 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
 
   const downloadTemplate = () => {
     const rows = [
-      ["sku","barcode","brand","name","category","supplier_id","cost","wholesale_price","retail_price","stock","low_stock_threshold","min_order","description","is_new_arrival","is_clearance","clearance_price"],
-      ["SKU-001","123456789","Apple","Product Name","Devices: Phones","s1","50000","80000","100000","10","5","2","Description here","false","false",""],
+      ["barcode","brand","name","category","cost","wholesale_price","retail_price","stock","low_stock_threshold","min_order","description","is_clearance","clearance_price"],
+      ["123456789","Apple","iPhone 15 Pro 256GB","Devices: Phones","50000","80000","100000","10","5","2","Product description here","false",""],
     ];
     downloadCSV(rows,"inventory_import_template.csv");
     showToast("Template downloaded");
   };
 
-  const handleImportCSV = (text) => {
+  const handleImportCSV = async (text) => {
     const lines = text.trim().split("\n");
     const headers = lines[0].split(",").map(h=>h.replace(/"/g,"").trim());
-    const newProds = lines.slice(1).map(line=>{
+    const imported = [];
+    for (const line of lines.slice(1)) {
+      if (!line.trim()) continue;
       const vals = line.split(",").map(v=>v.replace(/"/g,"").trim());
       const obj = {};
       headers.forEach((h,i)=>obj[h]=vals[i]||"");
-      return {
-        id:`p${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        sku:obj.sku, barcode:obj.barcode, brand:obj.brand, name:obj.name,
-        category:obj.category, supplier_id:obj.supplier_id,
-        cost:+obj.cost||0, wholesale_price:+obj.wholesale_price||0,
-        retail_price:+obj.retail_price||0, stock:+obj.stock||0,
+      if (!obj.name) continue;
+      const prod = {
+        barcode:obj.barcode||"", brand:obj.brand||"", name:obj.name,
+        category:obj.category||"Uncategorized",
+        cost:+obj.cost||0,
+        wholesale_price:+obj.wholesale_price||0,
+        retail_price:+obj.retail_price||0,
+        stock:+obj.stock||0,
         low_stock_threshold:+obj.low_stock_threshold||5,
-        min_order:+obj.min_order||1, description:obj.description,
-        is_new_arrival:obj.is_new_arrival==="true",
+        min_order:+obj.min_order||1,
+        description:obj.description||"",
         is_clearance:obj.is_clearance==="true",
         clearance_price:+obj.clearance_price||null,
-        active:true, created_at:today()
+        active:true,
+        created_at:new Date().toISOString()
       };
-    }).filter(p=>p.name&&p.sku);
-    setProducts(p=>[...p,...newProds]);
-    showToast(`${newProds.length} products imported`);
+      const {data} = await supabase.from("products").insert(prod).select().single();
+      if (data) imported.push(data);
+    }
+    setProducts(p=>[...imported,...p]);
+    showToast(`${imported.length} products imported`);
     setShowImport(false);
   };
 
@@ -1150,7 +1157,23 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
         </div>
       </div>
 
-      {showModal&&<ProductModal product={editing} suppliers={suppliers} categories={allCats.filter(c=>c!=="All")} onSave={(data)=>{ if(editing){setProducts(p=>p.map(x=>x.id===editing.id?{...x,...data}:x));showToast("Product updated");}else{setProducts(p=>[{...data,id:`p${Date.now()}`,active:true,created_at:today()},...p]);showToast("Product added");} setShowModal(false); }} onClose={()=>setShowModal(false)}/>}
+      {showModal&&<ProductModal product={editing} suppliers={suppliers} categories={allCats.filter(c=>c!=="All")} onSave={async(data)=>{
+  if(editing){
+    await supabase.from("products").update(data).eq("id",editing.id);
+    await supabase.from("activity_log").insert({action:"product_updated",details:`Updated: ${data.name}`,entity_type:"product",entity_id:editing.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+    setProducts(p=>p.map(x=>x.id===editing.id?{...x,...data}:x));
+    showToast("Product updated");
+  } else {
+    const prod={...data,active:true,created_at:new Date().toISOString()};
+    const {data:saved} = await supabase.from("products").insert(prod).select().single();
+    if(saved){
+      await supabase.from("activity_log").insert({action:"product_added",details:`Added: ${data.name}`,entity_type:"product",entity_id:saved.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+      setProducts(p=>[saved,...p]);
+    }
+    showToast("Product added");
+  }
+  setShowModal(false);
+}} onClose={()=>setShowModal(false)}/>}
       {showImport&&<ImportModal onImport={handleImportCSV} onDownloadTemplate={downloadTemplate} onClose={()=>setShowImport(false)}/>}
     </>
   );
@@ -1158,61 +1181,83 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
 
 function ProductModal({ product, suppliers, categories, onSave, onClose }) {
   const [f,setF]=useState({
-    sku:product?.sku||"", barcode:product?.barcode||"", brand:product?.brand||"", name:product?.name||"",
+    barcode:product?.barcode||"", brand:product?.brand||"", name:product?.name||"",
     category:product?.category||categories[0]||"", supplier_id:product?.supplier_id||suppliers[0]?.id||"",
     cost:product?.cost||"", wholesale_price:product?.wholesale_price||"", retail_price:product?.retail_price||"",
     stock:product?.stock||"", low_stock_threshold:product?.low_stock_threshold||5, min_order:product?.min_order||1,
-    description:product?.description||"", is_new_arrival:product?.is_new_arrival||false,
+    description:product?.description||"", image_url:product?.image_url||"",
     is_clearance:product?.is_clearance||false, clearance_price:product?.clearance_price||""
   });
+  const [uploading, setUploading] = useState(false);
+  const imgRef = useRef();
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
   const margin = f.wholesale_price&&f.cost ? Math.round((1-f.cost/f.wholesale_price)*100) : 0;
+
+  const handleImageUpload = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    const ext = file.name.split('.').pop();
+    const path = `products/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from('product-images').upload(path, file, { upsert: true });
+    if (error) { alert("Upload failed: " + error.message); setUploading(false); return; }
+    const { data } = supabase.storage.from('product-images').getPublicUrl(path);
+    s("image_url", data.publicUrl);
+    setUploading(false);
+  };
 
   return (
     <div className="overlay">
       <div className="modal modal-lg">
         <div className="modal-head"><h2>{product?"Edit Product":"Add Product"}</h2><button className="xbtn" onClick={onClose}>✕</button></div>
         <div className="modal-body">
-          <div className="form-row-4">
-            <div className="form-group"><label>SKU *</label><input value={f.sku} onChange={e=>s("sku",e.target.value)}/></div>
-            <div className="form-group"><label>Barcode</label><input value={f.barcode} onChange={e=>s("barcode",e.target.value)}/></div>
-            <div className="form-group"><label>Brand</label><input value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
-            <div className="form-group"><label>Category</label>
-              <select value={f.category} onChange={e=>s("category",e.target.value)}>
-                {categories.map(c=><option key={c}>{c}</option>)}
-              </select>
+          <div className="form-row">
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+              <div style={{width:120,height:120,border:"2px dashed var(--border)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden",background:"var(--bg3)",cursor:"pointer",flexShrink:0}} onClick={()=>imgRef.current.click()}>
+                {f.image_url ? <img src={f.image_url} style={{width:"100%",height:"100%",objectFit:"cover"}} alt="product"/> : <div style={{textAlign:"center",color:"var(--text3)",fontSize:12}}>📷<br/>Add Photo</div>}
+              </div>
+              <input ref={imgRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>e.target.files[0]&&handleImageUpload(e.target.files[0])}/>
+              <button className="btn btn-ghost btn-xs" onClick={()=>imgRef.current.click()} disabled={uploading}>{uploading?"Uploading…":"📷 Upload Photo"}</button>
+              {f.image_url&&<button className="btn btn-danger btn-xs" onClick={()=>s("image_url","")}>Remove</button>}
+            </div>
+            <div style={{flex:1}}>
+              <div className="form-group" style={{marginBottom:10}}><label>Product Name *</label><input value={f.name} onChange={e=>s("name",e.target.value)}/></div>
+              <div className="form-row">
+                <div className="form-group"><label>Barcode</label><input value={f.barcode} onChange={e=>s("barcode",e.target.value)}/></div>
+                <div className="form-group"><label>Brand</label><input value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
+              </div>
+              <div className="form-row">
+                <div className="form-group"><label>Category</label>
+                  <select value={f.category} onChange={e=>s("category",e.target.value)}>
+                    {categories.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="form-group"><label>Supplier</label>
+                  <select value={f.supplier_id} onChange={e=>s("supplier_id",e.target.value)}>
+                    {suppliers.map(sup=><option key={sup.id} value={sup.id}>{sup.name}</option>)}
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
-          <div className="form-row">
-            <div className="form-group" style={{gridColumn:"1/-1"}}><label>Product Name *</label><input value={f.name} onChange={e=>s("name",e.target.value)}/></div>
-          </div>
-          <div className="form-row">
-            <div className="form-group"><label>Supplier</label>
-              <select value={f.supplier_id} onChange={e=>s("supplier_id",e.target.value)}>
-                {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-            <div className="form-group"><label>Description</label><input value={f.description} onChange={e=>s("description",e.target.value)}/></div>
-          </div>
+          <div className="form-group"><label>Description</label><textarea value={f.description} onChange={e=>s("description",e.target.value)} rows={2}/></div>
           <div className="form-row-4">
             <div className="form-group"><label>Cost (J$)</label><input type="number" value={f.cost} onChange={e=>s("cost",e.target.value)}/></div>
-            <div className="form-group"><label>Wholesale Price (J$)</label><input type="number" value={f.wholesale_price} onChange={e=>s("wholesale_price",e.target.value)}/><div className="input-hint" style={{color:margin>0?"var(--accent)":"var(--danger)"}}>Margin: {margin}%</div></div>
+            <div className="form-group"><label>Wholesale Price (J$)</label><input type="number" value={f.wholesale_price} onChange={e=>s("wholesale_price",e.target.value)}/><div className="input-hint" style={{color:margin>0?"var(--success)":"var(--danger)"}}>Margin: {margin}%</div></div>
             <div className="form-group"><label>Suggested Retail (J$)</label><input type="number" value={f.retail_price} onChange={e=>s("retail_price",e.target.value)}/></div>
             <div className="form-group"><label>Min Order Qty</label><input type="number" value={f.min_order} onChange={e=>s("min_order",e.target.value)}/></div>
           </div>
           <div className="form-row-3">
             <div className="form-group"><label>Stock Qty</label><input type="number" value={f.stock} onChange={e=>s("stock",e.target.value)}/></div>
-            <div className="form-group"><label>Low Stock Threshold</label><input type="number" value={f.low_stock_threshold} onChange={e=>s("low_stock_threshold",e.target.value)}/></div>
-            <div className="form-group"><label>Clearance Price (if on clearance)</label><input type="number" value={f.clearance_price} onChange={e=>s("clearance_price",e.target.value)} placeholder="Leave blank if not on clearance"/></div>
+            <div className="form-group"><label>Low Stock Alert</label><input type="number" value={f.low_stock_threshold} onChange={e=>s("low_stock_threshold",e.target.value)}/></div>
+            <div className="form-group"><label>Clearance Price (J$)</label><input type="number" value={f.clearance_price} onChange={e=>s("clearance_price",e.target.value)} placeholder="Leave blank if not clearance"/></div>
           </div>
           <div style={{display:"flex",gap:24,marginTop:4}}>
-            <label className="checkbox-row"><input type="checkbox" checked={f.is_new_arrival} onChange={e=>s("is_new_arrival",e.target.checked)}/> Mark as New Arrival</label>
             <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> Mark as Clearance</label>
           </div>
         </div>
         <div className="modal-foot">
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={()=>onSave({...f,cost:+f.cost,wholesale_price:+f.wholesale_price,retail_price:+f.retail_price,stock:+f.stock,low_stock_threshold:+f.low_stock_threshold,min_order:+f.min_order,clearance_price:f.clearance_price?+f.clearance_price:null})}>Save Product</button>
+          <button className="btn btn-primary" disabled={uploading} onClick={()=>onSave({...f,cost:+f.cost,wholesale_price:+f.wholesale_price,retail_price:+f.retail_price,stock:+f.stock,low_stock_threshold:+f.low_stock_threshold,min_order:+f.min_order,clearance_price:f.clearance_price?+f.clearance_price:null})}>Save Product</button>
         </div>
       </div>
     </div>
@@ -1235,7 +1280,7 @@ function ImportModal({ onImport, onDownloadTemplate, onClose }) {
       <div className="modal modal-md">
         <div className="modal-head"><h2>📥 Batch Import Products</h2><button className="xbtn" onClick={onClose}>✕</button></div>
         <div className="modal-body">
-          <div className="alert alert-info">Upload a CSV file using the template format. Required columns: sku, name, category, wholesale_price, retail_price, stock.</div>
+          <div className="alert alert-info">Upload a CSV file using the template format. Required columns: name, category, wholesale_price, retail_price, stock. Download the template for the correct format.</div>
           <div style={{border:`2px dashed ${dragging?"var(--accent)":"var(--border)"}`,borderRadius:10,padding:32,textAlign:"center",marginBottom:14,transition:"border-color .2s",background:dragging?"rgba(0,212,168,.05)":"transparent",cursor:"pointer"}}
             onDragOver={e=>{e.preventDefault();setDragging(true);}}
             onDragLeave={()=>setDragging(false)}
@@ -2343,6 +2388,8 @@ function StoresPage({ stores, setStores, showToast }) {
 function CatalogPage({ products, user, addToCart, cart, settings }) {
   const [search,setSearch]=useState("");
   const [filterCat,setFilterCat]=useState("All");
+  const [filterBrand,setFilterBrand]=useState("All");
+  const [sortBy,setSortBy]=useState("name");
   const [tab,setTab]=useState("all");
   const isConsignment=user?.customer_type==="consignment";
 
@@ -2351,14 +2398,23 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
   );
 
   const visible=products.filter(p=>p.active&&p.stock>0&&!p.is_clearance);
-  const newArrivals=visible.filter(p=>p.is_new_arrival);
+  const newArrivals=visible.filter(p=>isNewArrival(p));
 
   const showProducts = tab==="new" ? newArrivals : visible;
-  const categories=["All",...new Set(showProducts.map(p=>p.category))];
+  const categories=["All",...new Set(showProducts.map(p=>p.category).filter(Boolean)).values()].sort();
+  const brands=["All",...new Set(showProducts.map(p=>p.brand).filter(Boolean)).values()].sort();
 
   const filtered=showProducts.filter(p=>{
     const q=search.toLowerCase();
-    return (filterCat==="All"||p.category===filterCat)&&(!q||p.name.toLowerCase().includes(q)||p.sku.toLowerCase().includes(q)||p.barcode?.includes(q)||p.brand?.toLowerCase().includes(q));
+    return (filterCat==="All"||p.category===filterCat)
+      &&(filterBrand==="All"||p.brand===filterBrand)
+      &&(!q||p.name.toLowerCase().includes(q)||p.barcode?.includes(q)||p.brand?.toLowerCase().includes(q));
+  }).sort((a,b)=>{
+    if(sortBy==="price_asc") return (a.wholesale_price||0)-(b.wholesale_price||0);
+    if(sortBy==="price_desc") return (b.wholesale_price||0)-(a.wholesale_price||0);
+    if(sortBy==="name") return a.name.localeCompare(b.name);
+    if(sortBy==="newest") return new Date(b.created_at)-new Date(a.created_at);
+    return 0;
   });
 
   const inCart=(id)=>cart.find(i=>i.pid===id)?.qty||0;
@@ -2374,13 +2430,24 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
         {newArrivals.length>0&&<button className={`tab ${tab==="new"?"active":""}`} onClick={()=>setTab("new")}>🆕 New Arrivals ({newArrivals.length})</button>}
       </div>
 
-      <div className="filter-bar">
-        <div className="search-wrap" style={{flex:2}}>
+      <div className="filter-bar" style={{flexWrap:"wrap",gap:8}}>
+        <div className="search-wrap" style={{flex:"1 1 200px"}}>
           <span className="search-icon">🔍</span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search products…"/>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by name, brand, barcode…"/>
         </div>
         <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{width:"auto"}}>
-          {categories.map(c=><option key={c}>{c}</option>)}
+          <option value="All">All Categories</option>
+          {categories.filter(c=>c!=="All").map(c=><option key={c}>{c}</option>)}
+        </select>
+        <select value={filterBrand} onChange={e=>setFilterBrand(e.target.value)} style={{width:"auto"}}>
+          <option value="All">All Brands</option>
+          {brands.filter(b=>b!=="All").map(b=><option key={b}>{b}</option>)}
+        </select>
+        <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{width:"auto"}}>
+          <option value="name">Sort: A–Z</option>
+          <option value="newest">Sort: Newest</option>
+          <option value="price_asc">Sort: Price Low–High</option>
+          <option value="price_desc">Sort: Price High–Low</option>
         </select>
       </div>
 
@@ -2394,11 +2461,12 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
           return (
             <div key={p.id} className="prod-card">
               {p.is_new_arrival&&<div className="prod-tag"><span className="new-badge">NEW</span></div>}
-              <div className="prod-card-img">📱</div>
+              <div className="prod-card-img">
+                {p.image_url ? <img src={p.image_url} alt={p.name} style={{width:"100%",height:"100%",objectFit:"cover"}}/> : <span style={{fontSize:40}}>📱</span>}
+              </div>
               <div className="prod-card-body">
                 <div className="prod-card-brand">{p.brand}</div>
                 <div className="prod-card-name">{p.name}</div>
-                <div className="prod-card-sku">SKU: {p.sku}</div>
                 {p.barcode&&<div style={{fontSize:10,color:"var(--text3)",marginBottom:4}}>Barcode: {p.barcode}</div>}
                 {!isConsignment&&<>
                   <div className="prod-price-row">
