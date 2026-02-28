@@ -3,10 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 // ─── SUPABASE CONFIG ───────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://hzykmhxsilbfkgzjkqoy.supabase.co";
-const SUPABASE_ANON_KEY = "- [ ] Consignment customers see when looking at products “You are viewing as a consignment customer. Contact us for pricing and to place orders.” Instead of them needing to contact us, I would still like them to be able to add to cart and check out, just without any prices attached. 
-- [ ] Please double check to make sure any checking out whatsoever, whether consignment or upfront buyers, deducts the QTY’s checked out from inventory. Maybe set it up so admin confirms the QTY’s can / have been shipped before it deducts. Sometimes we are unable to physically find a product so we want to be able to have that inventory remain in stock if we can ship it to the customer. 
-- [ ] Allow admin to process refunds whether for upfront buyers or consignment. This allows us to send back the inventory into stock if the customer sends the item(s) back to us. This can be done on looking at the customers invoice in admin, and only selecting the item(s) being returned to refund. Meaning if a customer originally checked out 20 different items, we should be able to only refund / send back to stock one of the items. 
-- [ ] The product page is still blank when admin presses “products on the left pane” ";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6eWttaHhzaWxiZmtnemprcW95Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxNjI4NDQsImV4cCI6MjA4NzczODg0NH0.jQ_Pey7cYwe6ZyqiMLMvnCj_FPdEuN9OXRAEqeFbYQQ";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -980,7 +977,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     if (filterStatus==="out"&&p.stock!==0) return false;
     if (filterCat!=="All"&&p.category!==filterCat) return false;
     if (filterSupplier!=="All"&&p.supplier_id!==filterSupplier) return false;
-    if (q&&!p.name.toLowerCase().includes(q)&&!p.sku.toLowerCase().includes(q)&&!p.barcode?.includes(q)&&!p.brand?.toLowerCase().includes(q)) return false;
+    if (q&&!p.name?.toLowerCase().includes(q)&&!p.sku?.toLowerCase().includes(q)&&!p.barcode?.includes(q)&&!p.brand?.toLowerCase().includes(q)) return false;
     return true;
   }),[products,search,filterCat,filterSupplier,filterStatus]);
 
@@ -1599,7 +1596,7 @@ function SuppliersPage({ suppliers, setSuppliers, products, showToast }) {
           <div className="tbl-wrap">
             <table><thead><tr><th>SKU</th><th>Name</th><th>Stock</th><th>Cost</th><th>Wholesale</th></tr></thead>
               <tbody>{supplierProducts(filterSupplier).map(p=>(
-                <tr key={p.id}><td><code>{p.sku}</code></td><td>{p.name}</td><td>{p.stock}</td><td>{fmt(p.cost)}</td><td style={{color:"var(--accent)"}}>{fmt(p.wholesale_price)}</td></tr>
+                <tr key={p.id}><td><code>{p.barcode||p.sku||"—"}</code></td><td>{p.name}</td><td>{p.stock}</td><td>{fmt(p.cost)}</td><td style={{color:"var(--accent)"}}>{fmt(p.wholesale_price)}</td></tr>
               ))}</tbody>
             </table>
           </div>
@@ -1642,7 +1639,7 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
   const [search,setSearch]=useState("");
 
   const activeProducts = products.filter(p=>p.active);
-  const filtered = activeProducts.filter(p=>!search||p.name.toLowerCase().includes(search.toLowerCase())||p.sku.toLowerCase().includes(search.toLowerCase()));
+  const filtered = activeProducts.filter(p=>!search||p.name?.toLowerCase().includes(search.toLowerCase())||p.sku?.toLowerCase().includes(search.toLowerCase()));
 
   const downloadCountSheet = () => {
     const rows=[["SKU","Barcode","Brand","Name","Category","System Count","Physical Count","Variance"],...activeProducts.map(p=>[p.sku,p.barcode||"",p.brand||"",p.name,p.category,p.stock,"",""])];
@@ -1809,7 +1806,7 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
   const [notes,setNotes]=useState("");
 
   const activeProducts=products.filter(p=>p.active&&p.stock>0);
-  const filtered=activeProducts.filter(p=>!search||p.name.toLowerCase().includes(search.toLowerCase())||p.sku.toLowerCase().includes(search.toLowerCase()));
+  const filtered=activeProducts.filter(p=>!search||p.name?.toLowerCase().includes(search.toLowerCase())||p.sku?.toLowerCase().includes(search.toLowerCase()));
 
   const addItem=(product)=>{
     if(items.find(i=>i.pid===product.id))return;
@@ -2184,7 +2181,7 @@ function ClearancePage({ products, isAdmin, addToCart, user }) {
               <div className="prod-card-body">
                 <div className="prod-card-brand">{p.brand}</div>
                 <div className="prod-card-name">{p.name}</div>
-                <div className="prod-card-sku">{p.sku} · {p.barcode||""}</div>
+                {p.barcode&&<div className="prod-card-sku">Barcode: {p.barcode}</div>}
                 {!isConsignment&&<div className="prod-price-row">
                   <span className="prod-ws">{fmt(p.clearance_price||p.wholesale_price)}</span>
                   {p.clearance_price&&<span className="prod-retail">{fmt(p.wholesale_price)}</span>}
