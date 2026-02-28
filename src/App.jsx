@@ -697,7 +697,7 @@ export default function App() {
           </div>
           <div className="content">
             {page==="dashboard" && <DashboardPage products={products} orders={orders} customers={customers} transfers={transfers} settings={settings} setPage={setPage}/>}
-            {page==="products" && <ProductsPage products={products} setProducts={setProducts} suppliers={suppliers} categories={DEMO_CATEGORIES} settings={settings} showToast={showToast}/>}
+            {page==="products" && <ProductsPage products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} orders={orders} transfers={transfers} settings={settings} showToast={showToast} isAdmin={isAdmin}/>}
             {page==="categories" && <CategoriesPage products={products} extraCategories={settings.extra_categories?JSON.parse(settings.extra_categories):[]} setExtraCategories={(v)=>setSettings(p=>({...p,extra_categories:JSON.stringify(v)}))} showToast={showToast}/>}
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
