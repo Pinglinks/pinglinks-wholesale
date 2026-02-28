@@ -1009,8 +1009,8 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
 
   const downloadTemplate = () => {
     const rows = [
-      ["barcode","brand","name","category","cost","wholesale_price","retail_price","stock","low_stock_threshold","min_order","description","is_clearance","clearance_price"],
-      ["123456789","Apple","iPhone 15 Pro 256GB","Devices: Phones","50000","80000","100000","10","5","2","Product description here","false",""],
+      ["barcode","brand","name","category","supplier","cost","wholesale_price","retail_price","stock","low_stock_threshold","min_order","description","is_clearance","clearance_price"],
+      ["123456789","Apple","iPhone 15 Pro 256GB","Devices: Phones","Supplier Name","50000","80000","100000","10","5","2","Product description here","false",""],
     ];
     downloadCSV(rows,"inventory_import_template.csv");
     showToast("Template downloaded");
@@ -1029,6 +1029,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
       const prod = {
         barcode:obj.barcode||"", brand:obj.brand||"", name:obj.name,
         category:obj.category||"Uncategorized",
+        supplier_name:obj.supplier||"",
         cost:+obj.cost||0,
         wholesale_price:+obj.wholesale_price||0,
         retail_price:+obj.retail_price||0,
