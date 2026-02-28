@@ -1033,6 +1033,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
     const lines = text.trim().split(/\r?\n/);
     const headers = parseCSVLine(lines[0]).map(h=>h.replace(/"/g,"").trim());
     const imported = [];
+    let lastError = "";
     for (const line of lines.slice(1)) {
       if (!line.trim()) continue;
       const vals = parseCSVLine(line).map(v=>v.replace(/^"|"$/g,"").trim());
@@ -1057,11 +1058,15 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
       };
       const {data, error} = await supabase.from("products").insert(prod).select().single();
       if (data) imported.push(data);
-      else if (error) console.error("Import error for row:", prod.name, error.message);
+      else if (error) { lastError = error.message; console.error("Import error:", prod.name, error.message); }
     }
-    setProducts(p=>[...imported,...p]);
-    showToast(imported.length > 0 ? `${imported.length} products imported` : "Import failed — check that all required fields are filled in");
-    setShowImport(false);
+    if (imported.length > 0) {
+      setProducts(p=>[...imported,...p]);
+      showToast(`${imported.length} products imported`);
+      setShowImport(false);
+    } else {
+      alert("Import failed.\n\nSupabase error:\n" + (lastError||"Unknown error") + "\n\nCheck that you ran the fix-products-defaults.sql in Supabase.");
+    }
   };
 
   const allCats = ["All",...new Set(products.map(p=>p.category))];
