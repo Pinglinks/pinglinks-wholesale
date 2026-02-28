@@ -1032,6 +1032,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
     const headers = parseCSVLine(lines[0]).map(h=>h.replace(/"/g,"").trim());
     const imported = [];
     let lastError = "";
+    const supplierCache = {};
     for (const line of lines.slice(1)) {
       if (!line.trim()) continue;
       const vals = parseCSVLine(line).map(v=>v.replace(/^"|"$/g,"").trim());
@@ -1054,21 +1055,28 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
         clearance_price:obj.clearance_price?parseFloat(obj.clearance_price):null,
         active:true
       };
-      // Create supplier record if supplier name provided and not already existing
-      let supplierId = null;
-      if (obj.supplier) {
-        const existing = suppliers.find(s=>s.name.toLowerCase()===obj.supplier.toLowerCase());
-        if (existing) {
-          supplierId = existing.id;
-        } else {
-          const {data:newSupp} = await supabase.from("suppliers").insert({name:obj.supplier}).select().single();
-          if (newSupp) {
-            supplierId = newSupp.id;
-            setSuppliers(p=>[...p, newSupp]);
+      // Create supplier record if supplier name provided
+      if (obj.supplier && obj.supplier.trim()) {
+        const supplierName = obj.supplier.trim();
+        // Check in local cache first
+        let supp = supplierCache[supplierName.toLowerCase()];
+        if (!supp) {
+          // Check DB
+          const {data:existing} = await supabase.from("suppliers").select("*").ilike("name", supplierName).maybeSingle();
+          if (existing) {
+            supp = existing;
+          } else {
+            // Create new supplier
+            const {data:newSupp} = await supabase.from("suppliers").insert({name:supplierName}).select().single();
+            if (newSupp) {
+              supp = newSupp;
+              setSuppliers(p=>[...p, newSupp]);
+            }
           }
+          if (supp) supplierCache[supplierName.toLowerCase()] = supp;
         }
+        if (supp) prod.supplier_id = supp.id;
       }
-      if (supplierId) prod.supplier_id = supplierId;
       const {data, error} = await supabase.from("products").insert(prod).select().single();
       if (data) {
         imported.push(data);
@@ -1393,7 +1401,19 @@ function ProductModal({ product, suppliers, categories, onSave, onClose }) {
         </div>
         <div className="modal-foot">
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" disabled={uploading} onClick={()=>onSave({...f,cost:+f.cost,wholesale_price:+f.wholesale_price,retail_price:+f.retail_price,stock:+f.stock,low_stock_threshold:+f.low_stock_threshold,min_order:+f.min_order,clearance_price:f.clearance_price?+f.clearance_price:null})}>Save Product</button>
+          <button className="btn btn-primary" disabled={uploading||!f.name} onClick={()=>{
+            if(!f.name){alert("Product name is required");return;}
+            onSave({
+              ...f,
+              cost:parseFloat(f.cost)||0,
+              wholesale_price:parseFloat(f.wholesale_price)||0,
+              retail_price:parseFloat(f.retail_price)||0,
+              stock:parseInt(f.stock)||0,
+              low_stock_threshold:parseInt(f.low_stock_threshold)||5,
+              min_order:parseInt(f.min_order)||1,
+              clearance_price:f.clearance_price&&String(f.clearance_price).trim()!==""?parseFloat(f.clearance_price):null
+            });
+          }}>{uploading?"Uploading…":"Save Product"}</button>
         </div>
       </div>
     </div>
@@ -1635,7 +1655,8 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
   const applyCount = async () => {
     const items=Object.entries(counts).filter(([,v])=>v!=="").map(([id,counted])=>{
       const p=products.find(x=>x.id===id);
-      return {product_id:id,product_name:p?.name||"",expected:p?.stock||0,counted:+counted,variance:+counted-(p?.stock||0)};
+      const variance=+counted-(p?.stock||0);
+      return {product_id:id,product_name:p?.name||"",expected:p?.stock||0,counted:+counted,variance,unit_cost:p?.cost||0,dollar_variance:variance*(p?.cost||0)};
     });
     if(!items.length){showToast("No counts entered","err");return;}
     const stId=genId("ST",stockTakes);
@@ -1674,26 +1695,30 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
               <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search products…"/>
             </div>
             <button className="btn btn-secondary btn-sm" onClick={downloadCountSheet}>⬇ Download Count Sheet</button>
-            {adjCount>0&&<span className="badge bw">{adjCount} items counted · Total variance: {totalVariance>0?"+":""}{totalVariance}</span>}
+{adjCount>0&&<span className="badge bw">{adjCount} items counted · Unit variance: {totalVariance>0?"+":""}{totalVariance} · Value: {fmt(Math.abs(Object.entries(counts).reduce((s,[id,v])=>{if(v==="")return s;const p=products.find(x=>x.id===id);return s+(+v-(p?.stock||0))*(p?.cost||0);},0)))}</span>}
           </div>
 
           <div className="card" style={{marginBottom:16}}>
             <div className="tbl-wrap">
               <table>
-                <thead><tr><th>SKU</th><th>Barcode</th><th>Name</th><th>Category</th><th>System Qty</th><th>Physical Count</th><th>Variance</th></tr></thead>
+                <thead><tr><th>Barcode</th><th>Name</th><th>Category</th><th>Unit Cost</th><th>System Qty</th><th>Physical Count</th><th>Variance (Units)</th><th>Variance (J$)</th></tr></thead>
                 <tbody>{filtered.map(p=>{
                   const counted=counts[p.id];
                   const variance=counted!==undefined&&counted!==""?+counted-p.stock:null;
+                  const dollarVar=variance!==null?variance*p.cost:null;
                   return (
                     <tr key={p.id} style={{background:variance!==null&&variance!==0?"rgba(255,170,0,.04)":""}}>
-                      <td><code>{p.sku}</code></td>
                       <td><code style={{fontSize:10}}>{p.barcode||"—"}</code></td>
                       <td style={{fontSize:12,fontWeight:500}}>{p.name}</td>
                       <td><span className="badge bb" style={{fontSize:10}}>{p.category}</span></td>
+                      <td style={{fontSize:12,color:"var(--text2)"}}>{fmt(p.cost)}</td>
                       <td style={{fontWeight:700}}>{p.stock}</td>
                       <td><input type="number" min="0" value={counts[p.id]||""} onChange={e=>setCounts(prev=>({...prev,[p.id]:e.target.value}))} style={{width:80,textAlign:"center"}} placeholder="—"/></td>
                       <td style={{fontWeight:700,color:variance===null?"var(--text3)":variance<0?"var(--danger)":variance>0?"var(--success)":"var(--text2)"}}>
                         {variance===null?"—":(variance>0?"+":"")+variance}
+                      </td>
+                      <td style={{fontWeight:700,color:dollarVar===null?"var(--text3)":dollarVar<0?"var(--danger)":dollarVar>0?"var(--success)":"var(--text2)"}}>
+                        {dollarVar===null?"—":(dollarVar>0?"+":"")+fmt(Math.abs(dollarVar))}
                       </td>
                     </tr>
                   );
@@ -1733,20 +1758,36 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
                   </div>
                 </div>
                 <div className="tbl-wrap">
-                  <table><thead><tr><th>Product ID</th><th>Expected</th><th>Counted</th><th>Variance</th></tr></thead>
-                    <tbody>{st.items.map((item,i)=>{
-                      const p=DEMO_PRODUCTS.find(x=>x.id===item.product_id);
+                  <table><thead><tr><th>Product</th><th>Unit Cost</th><th>Expected</th><th>Counted</th><th>Variance (Units)</th><th>Variance (J$)</th></tr></thead>
+                    <tbody>
+                    {st.items.map((item,i)=>{
+                      const p=products.find(x=>x.id===item.product_id);
+                      const dollarVar=item.dollar_variance!==undefined?item.dollar_variance:item.variance*(p?.cost||item.unit_cost||0);
                       return (
                         <tr key={i}>
-                          <td style={{fontSize:12}}>{p?.name||item.product_id}</td>
+                          <td style={{fontSize:12,fontWeight:500}}>{item.product_name||p?.name||item.product_id}</td>
+                          <td style={{fontSize:12,color:"var(--text2)"}}>{fmt(p?.cost||item.unit_cost||0)}</td>
                           <td>{item.expected}</td>
                           <td>{item.counted}</td>
                           <td style={{fontWeight:700,color:item.variance<0?"var(--danger)":item.variance>0?"var(--success)":"var(--text2)"}}>
                             {item.variance>0?"+":""}{item.variance}
                           </td>
+                          <td style={{fontWeight:700,color:dollarVar<0?"var(--danger)":dollarVar>0?"var(--success)":"var(--text2)"}}>
+                            {dollarVar>0?"+":""}{fmt(Math.abs(dollarVar))}
+                          </td>
                         </tr>
                       );
-                    })}</tbody>
+                    })}
+                    <tr style={{background:"var(--bg3)",fontWeight:700}}>
+                      <td colSpan={4} style={{textAlign:"right",paddingRight:12}}>Total Variance:</td>
+                      <td style={{color:st.items.reduce((s,i)=>s+i.variance,0)<0?"var(--danger)":"var(--success)"}}>
+                        {st.items.reduce((s,i)=>s+i.variance,0)>0?"+":""}{st.items.reduce((s,i)=>s+i.variance,0)} units
+                      </td>
+                      <td style={{color:st.items.reduce((s,i)=>s+(i.dollar_variance||0),0)<0?"var(--danger)":"var(--success)"}}>
+                        {st.items.reduce((s,i)=>s+(i.dollar_variance||0),0)>0?"+":""}{fmt(Math.abs(st.items.reduce((s,i)=>s+(i.dollar_variance||0),0)))}
+                      </td>
+                    </tr>
+                    </tbody>
                   </table>
                 </div>
               </div>
@@ -2640,9 +2681,28 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
                 </>}
                 <div className="prod-stock">{p.stock} in stock · Min: {p.min_order}{qty>0?` · ${qty} in cart`:""}</div>
                 <div style={{fontSize:11,color:"var(--text2)",marginBottom:10,lineHeight:1.4}}>{p.description}</div>
-                {!isConsignment&&<button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} onClick={()=>addToCart(p,p.min_order)}>
-                  {qty>0?"➕ Add More":"Add to Cart"}
-                </button>}
+                {!isConsignment&&<>
+                  <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+                    <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
+                    <input
+                      type="number"
+                      min={p.min_order||1}
+                      max={p.stock}
+                      defaultValue={p.min_order||1}
+                      id={`qty-${p.id}`}
+                      style={{width:"70px",textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}
+                      onClick={e=>e.stopPropagation()}
+                    />
+                    <div style={{fontSize:10,color:"var(--text3)"}}>min {p.min_order||1}</div>
+                  </div>
+                  <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} onClick={()=>{
+                    const inp=document.getElementById(`qty-${p.id}`);
+                    const val=Math.max(p.min_order||1, Math.min(p.stock, parseInt(inp?.value)||p.min_order||1));
+                    addToCart(p, val);
+                  }}>
+                    {qty>0?"➕ Add More":"Add to Cart"}
+                  </button>
+                </>}
                 {isConsignment&&<div className="alert alert-info" style={{padding:"6px 10px",fontSize:11}}>Contact us for pricing & ordering</div>}
               </div>
             </div>
