@@ -1055,12 +1055,50 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
         active:true,
         created_at:new Date().toISOString()
       };
-      const {data} = await supabase.from("products").insert(prod).select().single();
+      const {data, error} = await supabase.from("products").insert(prod).select().single();
       if (data) imported.push(data);
+      else if (error) console.error("Import error for row:", prod.name, error.message);
     }
-    setProducts(p=>[...imported,...p]);
-    showToast(`${imported.length} products imported`);
-    setShowImport(false);
+    if (imported.length === 0) {
+      showToast("Import failed — check console for details","err");
+      // Try inserting without supplier_name in case column doesn't exist
+      const retried = [];
+      for (const line of lines.slice(1)) {
+        if (!line.trim()) continue;
+        const vals = parseCSVLine(line).map(v=>v.replace(/^"|"$/g,"").trim());
+        const obj = {};
+        headers.forEach((h,i)=>obj[h]=vals[i]||"");
+        if (!obj.name) continue;
+        const prod = {
+          barcode:obj.barcode||"", brand:obj.brand||"", name:obj.name,
+          category:obj.category||"Uncategorized",
+          cost:+obj.cost||0,
+          wholesale_price:+obj.wholesale_price||0,
+          retail_price:+obj.retail_price||0,
+          stock:+obj.stock||0,
+          low_stock_threshold:+obj.low_stock_threshold||5,
+          min_order:+obj.min_order||1,
+          description:obj.description||"",
+          is_clearance:obj.is_clearance?.toLowerCase()==="true",
+          clearance_price:+obj.clearance_price||null,
+          active:true,
+          created_at:new Date().toISOString()
+        };
+        const {data:d2, error:e2} = await supabase.from("products").insert(prod).select().single();
+        if (d2) retried.push(d2);
+        else console.error("Retry error:", e2?.message);
+      }
+      if (retried.length > 0) {
+        setProducts(p=>[...retried,...p]);
+        showToast(`${retried.length} products imported`);
+        setShowImport(false);
+        return;
+      }
+    } else {
+      setProducts(p=>[...imported,...p]);
+      showToast(`${imported.length} products imported`);
+      setShowImport(false);
+    }
   };
 
   const allCats = ["All",...new Set(products.map(p=>p.category))];
