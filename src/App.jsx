@@ -1016,13 +1016,26 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
     showToast("Template downloaded");
   };
 
+  const parseCSVLine = (line) => {
+    const result = [];
+    let cur = "", inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { inQuote = !inQuote; }
+      else if (ch === ',' && !inQuote) { result.push(cur.trim()); cur = ""; }
+      else { cur += ch; }
+    }
+    result.push(cur.trim());
+    return result;
+  };
+
   const handleImportCSV = async (text) => {
-    const lines = text.trim().split("\n");
-    const headers = lines[0].split(",").map(h=>h.replace(/"/g,"").trim());
+    const lines = text.trim().split(/\r?\n/);
+    const headers = parseCSVLine(lines[0]).map(h=>h.replace(/"/g,"").trim());
     const imported = [];
     for (const line of lines.slice(1)) {
       if (!line.trim()) continue;
-      const vals = line.split(",").map(v=>v.replace(/"/g,"").trim());
+      const vals = parseCSVLine(line).map(v=>v.replace(/^"|"$/g,"").trim());
       const obj = {};
       headers.forEach((h,i)=>obj[h]=vals[i]||"");
       if (!obj.name) continue;
@@ -1037,7 +1050,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
         low_stock_threshold:+obj.low_stock_threshold||5,
         min_order:+obj.min_order||1,
         description:obj.description||"",
-        is_clearance:obj.is_clearance==="true",
+        is_clearance:obj.is_clearance?.toLowerCase()==="true",
         clearance_price:+obj.clearance_price||null,
         active:true,
         created_at:new Date().toISOString()
