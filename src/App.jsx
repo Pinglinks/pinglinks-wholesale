@@ -448,6 +448,7 @@ export default function App() {
   const [orders, setOrders]     = useState([]);
   const [transfers, setTransfers] = useState([]);
   const [stockTakes, setStockTakes] = useState([]);
+  const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [stores, setStores]     = useState([]);
   const [settings, setSettings] = useState({ company_name:"Pinglinks Cellular", company_address:"Kingston, Jamaica", company_phone:"", company_email:"info@pinglinkscellular.com", currency_symbol:"J$", tax_rate:15, invoice_prefix:"INV", transfer_prefix:"TRF" });
@@ -489,6 +490,8 @@ export default function App() {
         { data: setts },
         { data: transList },
         { data: transItems },
+        { data: poList },
+        { data: poItems },
       ] = await Promise.all([
         supabase.from("products").select("*").order("name"),
         u.role === "admin" ? supabase.from("profiles").select("*").eq("role","buyer").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
@@ -501,6 +504,8 @@ export default function App() {
         supabase.from("site_settings").select("*").eq("id",1).single(),
         u.role === "admin" ? supabase.from("transfers").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("transfer_items").select("*") : Promise.resolve({data:[]}),
+        u.role === "admin" ? supabase.from("purchase_orders").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
+        u.role === "admin" ? supabase.from("purchase_order_items").select("*") : Promise.resolve({data:[]}),
       ]);
       if (prods) setProducts(prods);
       if (custs) setCustomers(custs);
@@ -520,6 +525,13 @@ export default function App() {
           items: (transItems || []).filter(i => i.transfer_id === t.id)
         }));
         setTransfers(merged);
+      }
+      if (poList && poItems) {
+        const merged = poList.map(po => ({
+          ...po,
+          items: (poItems || []).filter(i => i.po_id === po.id)
+        }));
+        setPurchaseOrders(merged);
       }
     } catch(e) { console.error("Load error:", e); }
     setLoading(false);
@@ -609,6 +621,7 @@ export default function App() {
     {section:"Overview", items:[{id:"dashboard",icon:"📊",label:"Dashboard"}]},
     {section:"Inventory", items:[
       {id:"products",icon:"📦",label:"Products"},
+      {id:"purchaseorders",icon:"🛒",label:"Purchase Orders"},
       {id:"categories",icon:"🏷️",label:"Categories"},
       {id:"suppliers",icon:"🏭",label:"Suppliers"},
       {id:"stocktake",icon:"📋",label:"Stock Take"},
@@ -635,6 +648,7 @@ export default function App() {
   const buyerNav = [
     {section:"Shop", items:[
       {id:"catalog",icon:"🏪",label:"Catalog"},
+      {id:"incoming",icon:"📬",label:"Arriving Soon"},
       {id:"clearance",icon:"🔥",label:"Clearance"},
       {id:"my-orders",icon:"🧾",label:"My Orders"},
     ]},
@@ -697,6 +711,8 @@ export default function App() {
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
             {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} settings={settings} showToast={showToast}/>}
+            {page==="purchaseorders" && <PurchaseOrdersPage purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} products={products} setProducts={setProducts} suppliers={suppliers} settings={settings} showToast={showToast}/>}
+            {page==="incoming" && <IncomingStockPage purchaseOrders={purchaseOrders}/>}
             {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} showToast={showToast}/>}
@@ -2450,6 +2466,451 @@ function CustomerEditModal({ customer, onSave, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── ACTIVITY LOG PAGE ────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── PURCHASE ORDERS PAGE ────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setProducts, suppliers, settings, showToast }) {
+  const [tab, setTab] = useState("list");
+  const [editing, setEditing] = useState(null);
+  const [showReceive, setShowReceive] = useState(null);
+  const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+
+  const filtered = purchaseOrders.filter(po => {
+    if (filter !== "all" && po.status !== filter) return false;
+    if (search && !po.id?.toLowerCase().includes(search.toLowerCase()) && !po.supplier_name?.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const statusColor = { open:"var(--accent)", received:"var(--success)", partial:"var(--warn)", cancelled:"var(--danger)" };
+
+  return (
+    <>
+      <div className="filter-bar" style={{marginBottom:16}}>
+        <div className="search-wrap" style={{flex:2}}>
+          <span className="search-icon">🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by PO # or supplier…"/>
+        </div>
+        {["all","open","partial","received","cancelled"].map(f=>(
+          <button key={f} className={`btn btn-sm ${filter===f?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(f)}>
+            {f.charAt(0).toUpperCase()+f.slice(1)}
+          </button>
+        ))}
+        <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setTab("form");}}>+ New PO</button>
+      </div>
+
+      {tab==="list"&&(
+        <div className="card">
+          <div className="tbl-wrap">
+            <table>
+              <thead><tr>
+                <th>PO #</th><th>Supplier</th><th>Expected</th><th>Items</th><th>Ordered</th><th>Received</th><th>Status</th><th>Actions</th>
+              </tr></thead>
+              <tbody>
+                {filtered.length===0&&<tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No purchase orders found.</td></tr>}
+                {filtered.map(po=>{
+                  const totalOrdered = (po.items||[]).reduce((s,i)=>s+i.ordered_qty,0);
+                  const totalReceived = (po.items||[]).reduce((s,i)=>s+(i.received_qty||0),0);
+                  return (
+                    <tr key={po.id}>
+                      <td><code style={{fontWeight:700}}>{po.id}</code></td>
+                      <td style={{fontWeight:500}}>{po.supplier_name||"—"}</td>
+                      <td style={{fontSize:12,color:"var(--text2)"}}>{po.expected_date||"—"}</td>
+                      <td>{(po.items||[]).length}</td>
+                      <td style={{fontWeight:600}}>{totalOrdered}</td>
+                      <td style={{fontWeight:600,color:totalReceived===totalOrdered?"var(--success)":totalReceived>0?"var(--warn)":"var(--text3)"}}>{totalReceived}</td>
+                      <td><span className="badge" style={{background:`${statusColor[po.status]||"var(--accent)"}22`,color:statusColor[po.status]||"var(--accent)",fontSize:10}}>{po.status}</span></td>
+                      <td><div className="tbl-actions">
+                        <button className="btn btn-secondary btn-xs" onClick={()=>{setEditing(po);setTab("form");}}>Edit</button>
+                        {po.status!=="received"&&po.status!=="cancelled"&&<button className="btn btn-primary btn-xs" onClick={()=>setShowReceive(po)}>📥 Receive</button>}
+                      </div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{padding:"10px 16px",fontSize:12,color:"var(--text3)",borderTop:"1px solid var(--border)"}}>
+            {filtered.length} purchase orders
+          </div>
+        </div>
+      )}
+
+      {tab==="form"&&<POFormPage po={editing} suppliers={suppliers} products={products} settings={settings} showToast={showToast}
+        onSave={async(data)=>{
+          if(editing){
+            await supabase.from("purchase_orders").update({supplier_id:data.supplier_id,supplier_name:data.supplier_name,expected_date:data.expected_date,shipping_cost:data.shipping_cost,lot_ref:data.lot_ref,notes:data.notes,status:data.status}).eq("id",editing.id);
+            await supabase.from("purchase_order_items").delete().eq("po_id",editing.id);
+            await supabase.from("purchase_order_items").insert(data.items.map(i=>({...i,po_id:editing.id})));
+            setPurchaseOrders(prev=>prev.map(p=>p.id===editing.id?{...p,...data}:p));
+            showToast("Purchase order updated");
+          } else {
+            const id = "PO-"+Date.now();
+            const po = {id,supplier_id:data.supplier_id,supplier_name:data.supplier_name,expected_date:data.expected_date,shipping_cost:data.shipping_cost||0,lot_ref:data.lot_ref||"",notes:data.notes||"",status:"open",created_at:new Date().toISOString()};
+            await supabase.from("purchase_orders").insert(po);
+            await supabase.from("purchase_order_items").insert(data.items.map(i=>({...i,po_id:id})));
+            setPurchaseOrders(prev=>[{...po,items:data.items},...prev]);
+            showToast("Purchase order created");
+          }
+          setEditing(null); setTab("list");
+        }}
+        onCancel={()=>{setEditing(null);setTab("list");}}
+      />}
+
+      {showReceive&&<ReceivePOModal po={showReceive} products={products} setProducts={setProducts} setPurchaseOrders={setPurchaseOrders} showToast={showToast} onClose={()=>setShowReceive(null)}/>}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── PO FORM PAGE ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function POFormPage({ po, suppliers, products, settings, showToast, onSave, onCancel }) {
+  const [f, setF] = useState({
+    supplier_id: po?.supplier_id||"",
+    supplier_name: po?.supplier_name||"",
+    expected_date: po?.expected_date||"",
+    shipping_cost: po?.shipping_cost||"",
+    lot_ref: po?.lot_ref||"",
+    notes: po?.notes||"",
+    status: po?.status||"open",
+  });
+  const [items, setItems] = useState(po?.items||[]);
+  const [productSearch, setProductSearch] = useState("");
+  const [showPicker, setShowPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const pickerResults = products.filter(p=>p.active&&(
+    p.name?.toLowerCase().includes(productSearch.toLowerCase())||
+    p.barcode?.includes(productSearch)||
+    p.brand?.toLowerCase().includes(productSearch.toLowerCase())
+  )).slice(0,20);
+
+  const addItem = (p) => {
+    if (items.find(i=>i.product_id===p.id)) { showToast("Already in PO"); return; }
+    setItems(prev=>[...prev,{product_id:p.id,product_name:p.name,barcode:p.barcode||"",ordered_qty:1,received_qty:0,unit_cost:"",note:""}]);
+    setProductSearch(""); setShowPicker(false);
+  };
+
+  const addNewItem = () => {
+    setItems(prev=>[...prev,{product_id:"",product_name:"",barcode:"",ordered_qty:1,received_qty:0,unit_cost:"",note:"",is_new:true}]);
+  };
+
+  const updateItem = (idx,key,val) => setItems(prev=>prev.map((it,i)=>i===idx?{...it,[key]:val}:it));
+  const removeItem = (idx) => setItems(prev=>prev.filter((_,i)=>i!==idx));
+
+  const totalUnits = items.reduce((s,i)=>s+(+i.ordered_qty||0),0);
+
+  const handleSave = async () => {
+    if (!items.length) { showToast("Add at least one item","err"); return; }
+    setSaving(true);
+    await onSave({...f, items: items.map(i=>({
+      product_id: i.product_id||null,
+      product_name: i.product_name||"",
+      barcode: i.barcode||"",
+      ordered_qty: parseInt(i.ordered_qty)||1,
+      received_qty: parseInt(i.received_qty)||0,
+      unit_cost: parseFloat(i.unit_cost)||0,
+      note: i.note||""
+    }))});
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h3 style={{margin:0}}>{po?"Edit Purchase Order":"New Purchase Order"} {po&&<code style={{fontSize:14,marginLeft:8}}>{po.id}</code>}</h3>
+        <button className="btn btn-ghost btn-sm" onClick={onCancel}>← Back to List</button>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+        <div className="card">
+          <div className="card-header"><h3>🏭 Supplier Info</h3></div>
+          <div className="card-body">
+            <div className="form-group">
+              <label>Supplier</label>
+              <select value={f.supplier_id} onChange={e=>{const s=suppliers.find(x=>x.id===e.target.value);setF(p=>({...p,supplier_id:e.target.value,supplier_name:s?.name||""}));}}>
+                <option value="">— Select Supplier —</option>
+                {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div className="form-group"><label>Supplier Name (manual)</label><input value={f.supplier_name} onChange={e=>setF(p=>({...p,supplier_name:e.target.value}))}/></div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header"><h3>📋 Order Info</h3></div>
+          <div className="card-body">
+            <div className="form-row">
+              <div className="form-group"><label>Expected Date</label><input type="date" value={f.expected_date} onChange={e=>setF(p=>({...p,expected_date:e.target.value}))}/></div>
+              <div className="form-group"><label>Lot / Ref #</label><input value={f.lot_ref} onChange={e=>setF(p=>({...p,lot_ref:e.target.value}))}/></div>
+            </div>
+            <div className="form-row">
+              <div className="form-group"><label>Shipping Cost (J$)</label><input type="number" value={f.shipping_cost} onChange={e=>setF(p=>({...p,shipping_cost:e.target.value}))}/></div>
+              <div className="form-group"><label>Status</label>
+                <select value={f.status} onChange={e=>setF(p=>({...p,status:e.target.value}))}>
+                  {["open","partial","received","cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="form-group"><label>Notes</label><input value={f.notes} onChange={e=>setF(p=>({...p,notes:e.target.value}))}/></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header">
+          <h3>📦 Items ({items.length})</h3>
+          <div style={{display:"flex",gap:8}}>
+            <div style={{position:"relative"}}>
+              <input value={productSearch} onChange={e=>{setProductSearch(e.target.value);setShowPicker(true);}} placeholder="Search existing product…" style={{padding:"6px 10px",border:"1px solid var(--border)",borderRadius:6,fontSize:12,width:220}}/>
+              {showPicker&&productSearch&&pickerResults.length>0&&(
+                <div style={{position:"absolute",top:"100%",left:0,background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,boxShadow:"0 4px 20px rgba(0,0,0,.15)",zIndex:100,width:320,maxHeight:200,overflowY:"auto"}}>
+                  {pickerResults.map(p=>(
+                    <div key={p.id} style={{padding:"8px 12px",cursor:"pointer",fontSize:12,borderBottom:"1px solid var(--border)"}} onClick={()=>addItem(p)}
+                      onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"}
+                      onMouseLeave={e=>e.currentTarget.style.background=""}>
+                      <div style={{fontWeight:600}}>{p.name}</div>
+                      <div style={{color:"var(--text3)",fontSize:11}}>{p.barcode||"No barcode"} · Stock: {p.stock}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={addNewItem}>+ New Item</button>
+          </div>
+        </div>
+        <div className="tbl-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Product Name</th><th>Barcode</th><th>Ordered Qty</th><th>Unit Cost (J$)</th><th>Total</th><th>Note</th><th></th></tr></thead>
+            <tbody>
+              {items.length===0&&<tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No items added yet. Search for a product or click "+ New Item".</td></tr>}
+              {items.map((item,idx)=>(
+                <tr key={idx}>
+                  <td style={{color:"var(--text3)",fontWeight:600}}>{idx+1}</td>
+                  <td><input value={item.product_name} onChange={e=>updateItem(idx,"product_name",e.target.value)} style={{width:"100%",minWidth:180}}/></td>
+                  <td><input value={item.barcode} onChange={e=>updateItem(idx,"barcode",e.target.value)} style={{width:110}}/></td>
+                  <td><input type="number" min={1} value={item.ordered_qty} onChange={e=>updateItem(idx,"ordered_qty",e.target.value)} style={{width:70,textAlign:"center"}}/></td>
+                  <td><input type="number" min={0} value={item.unit_cost} onChange={e=>updateItem(idx,"unit_cost",e.target.value)} placeholder="0" style={{width:100,textAlign:"right"}}/></td>
+                  <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt((+item.ordered_qty||0)*(+item.unit_cost||0))}</td>
+                  <td><input value={item.note||""} onChange={e=>updateItem(idx,"note",e.target.value)} placeholder="Optional" style={{width:120}}/></td>
+                  <td><button className="btn btn-danger btn-xs" onClick={()=>removeItem(idx)}>✕</button></td>
+                </tr>
+              ))}
+              {items.length>0&&(
+                <tr style={{background:"var(--bg3)",fontWeight:700}}>
+                  <td colSpan={3} style={{textAlign:"right",paddingRight:12}}>Totals:</td>
+                  <td style={{textAlign:"center"}}>{totalUnits} units</td>
+                  <td></td>
+                  <td style={{color:"var(--accent)"}}>{fmt(items.reduce((s,i)=>s+(+i.ordered_qty||0)*(+i.unit_cost||0),0))}</td>
+                  <td colSpan={2}></td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div style={{padding:"12px 16px",display:"flex",justifyContent:"flex-end",gap:8,borderTop:"1px solid var(--border)"}}>
+          <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving?"Saving…":"Save Purchase Order"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── RECEIVE PO MODAL ────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function ReceivePOModal({ po, products, setProducts, setPurchaseOrders, showToast, onClose }) {
+  const [items, setItems] = useState((po.items||[]).map(i=>({...i, receive_qty: i.ordered_qty-(i.received_qty||0), new_cost: i.unit_cost||""})));
+  const [processing, setProcessing] = useState(false);
+
+  const updateItem = (idx,key,val) => setItems(prev=>prev.map((it,i)=>i===idx?{...it,[key]:val}:it));
+
+  const processReceiving = async () => {
+    const receiving = items.filter(i=>(+i.receive_qty||0)>0);
+    if (!receiving.length) { showToast("Enter qty for at least one item","err"); return; }
+    setProcessing(true);
+
+    for (const item of receiving) {
+      const receiveQty = parseInt(item.receive_qty)||0;
+      const newCost = parseFloat(item.new_cost)||0;
+      if (!receiveQty) continue;
+
+      // Find existing product by product_id or barcode
+      let prod = products.find(p=>p.id===item.product_id);
+      if (!prod && item.barcode) prod = products.find(p=>p.barcode===item.barcode);
+
+      if (prod) {
+        // Weighted average cost calculation
+        const existingValue = prod.stock * (prod.cost||0);
+        const newValue = receiveQty * newCost;
+        const newTotalStock = prod.stock + receiveQty;
+        const avgCost = newTotalStock > 0 ? Math.round((existingValue + newValue) / newTotalStock) : newCost;
+
+        await supabase.from("products").update({
+          stock: newTotalStock,
+          cost: avgCost,
+          active: true,
+          created_at: prod.created_at || new Date().toISOString()
+        }).eq("id", prod.id);
+
+        setProducts(prev=>prev.map(p=>p.id===prod.id?{...p,stock:newTotalStock,cost:avgCost,active:true}:p));
+
+        // Log receipt
+        await supabase.from("activity_log").insert({
+          action:"stock_received",
+          details:`Received ${receiveQty} units of ${prod.name} @ ${fmt(newCost)} (avg cost now ${fmt(avgCost)}) via PO ${po.id}`,
+          entity_type:"product", entity_id:String(prod.id),
+          user_name:"Admin", timestamp:new Date().toISOString()
+        }).catch(()=>{});
+      } else if (item.product_name) {
+        // Create new product from PO item
+        const newProd = {
+          name: item.product_name,
+          barcode: item.barcode||"",
+          cost: newCost,
+          wholesale_price: 0,
+          retail_price: 0,
+          stock: receiveQty,
+          low_stock_threshold: 5,
+          min_order: 1,
+          active: true,
+          created_at: new Date().toISOString()
+        };
+        const {data:saved} = await supabase.from("products").insert(newProd).select().single();
+        if (saved) {
+          setProducts(prev=>[saved,...prev]);
+          await supabase.from("activity_log").insert({
+            action:"product_added",
+            details:`New product received via PO ${po.id}: ${item.product_name} x${receiveQty}`,
+            entity_type:"product", entity_id:String(saved.id),
+            user_name:"Admin", timestamp:new Date().toISOString()
+          }).catch(()=>{});
+        }
+      }
+
+      // Update PO item received qty
+      const newReceived = (item.received_qty||0) + receiveQty;
+      await supabase.from("purchase_order_items").update({received_qty:newReceived, unit_cost:newCost}).eq("id",item.id).catch(()=>{});
+    }
+
+    // Update PO status
+    const updatedItems = items.map(i=>({...i, received_qty:(i.received_qty||0)+(parseInt(i.receive_qty)||0)}));
+    const allReceived = updatedItems.every(i=>i.received_qty>=i.ordered_qty);
+    const anyReceived = updatedItems.some(i=>(i.received_qty||0)>0);
+    const newStatus = allReceived?"received":anyReceived?"partial":"open";
+    await supabase.from("purchase_orders").update({status:newStatus}).eq("id",po.id);
+    setPurchaseOrders(prev=>prev.map(p=>p.id===po.id?{...p,status:newStatus,items:updatedItems}:p));
+
+    setProcessing(false);
+    showToast(`Stock received — ${receiving.length} item(s) added to inventory`);
+    onClose();
+  };
+
+  return (
+    <div className="overlay">
+      <div className="modal modal-lg">
+        <div className="modal-head">
+          <div>
+            <h2>📥 Receive Stock</h2>
+            <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>PO {po.id} · {po.supplier_name}</div>
+          </div>
+          <button className="xbtn" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{marginBottom:14}}>Enter the quantity received and confirm/update the unit cost for each item. Cost will be averaged with existing inventory.</div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr style={{borderBottom:"2px solid var(--border)"}}>
+              <th style={{textAlign:"left",padding:"8px 6px",fontSize:12}}>Product</th>
+              <th style={{textAlign:"center",padding:"8px 6px",fontSize:12}}>Ordered</th>
+              <th style={{textAlign:"center",padding:"8px 6px",fontSize:12}}>Previously Received</th>
+              <th style={{textAlign:"center",padding:"8px 6px",fontSize:12}}>Receiving Now</th>
+              <th style={{textAlign:"right",padding:"8px 6px",fontSize:12}}>Unit Cost (J$)</th>
+              <th style={{textAlign:"right",padding:"8px 6px",fontSize:12}}>Subtotal</th>
+            </tr></thead>
+            <tbody>
+              {items.map((item,idx)=>{
+                const remaining = item.ordered_qty - (item.received_qty||0);
+                const subtotal = (parseInt(item.receive_qty)||0)*(parseFloat(item.new_cost)||0);
+                const prod = products.find(p=>p.id===item.product_id);
+                return (
+                  <tr key={idx} style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"10px 6px"}}>
+                      <div style={{fontWeight:600,fontSize:13}}>{item.product_name}</div>
+                      <div style={{fontSize:11,color:"var(--text3)"}}>{item.barcode||"No barcode"}{prod?` · In stock: ${prod.stock}`:""}</div>
+                    </td>
+                    <td style={{textAlign:"center",fontWeight:600}}>{item.ordered_qty}</td>
+                    <td style={{textAlign:"center",color:"var(--text3)"}}>{item.received_qty||0}</td>
+                    <td style={{textAlign:"center"}}>
+                      <input type="number" min={0} max={remaining} value={item.receive_qty}
+                        onChange={e=>updateItem(idx,"receive_qty",Math.min(remaining,Math.max(0,+e.target.value)))}
+                        style={{width:70,textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6}}/>
+                      <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>{remaining} remaining</div>
+                    </td>
+                    <td style={{textAlign:"right"}}>
+                      <input type="number" min={0} value={item.new_cost}
+                        onChange={e=>updateItem(idx,"new_cost",e.target.value)}
+                        style={{width:100,textAlign:"right",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6}}/>
+                      {prod&&prod.cost>0&&<div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>Current: {fmt(prod.cost)}</div>}
+                    </td>
+                    <td style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>{fmt(subtotal)}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{background:"var(--bg3)"}}>
+                <td colSpan={3} style={{padding:"10px 6px",textAlign:"right",fontWeight:700}}>Total Receiving:</td>
+                <td style={{textAlign:"center",fontWeight:700}}>{items.reduce((s,i)=>s+(parseInt(i.receive_qty)||0),0)} units</td>
+                <td></td>
+                <td style={{textAlign:"right",fontWeight:700,color:"var(--accent)"}}>{fmt(items.reduce((s,i)=>s+(parseInt(i.receive_qty)||0)*(parseFloat(i.new_cost)||0),0))}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={processReceiving} disabled={processing}>{processing?"Processing…":"Confirm Receipt & Update Inventory"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── INCOMING STOCK PAGE (CUSTOMER FACING) ───────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function IncomingStockPage({ purchaseOrders }) {
+  const incoming = purchaseOrders.filter(po=>po.status==="open"||po.status==="partial");
+  const allItems = incoming.flatMap(po=>(po.items||[]).filter(i=>(i.ordered_qty-(i.received_qty||0))>0).map(i=>({...i,po_id:po.id,expected_date:po.expected_date,supplier_name:po.supplier_name})));
+  const grouped = {};
+  allItems.forEach(i=>{ const k=i.product_name||"Unknown"; if(!grouped[k])grouped[k]=[];grouped[k].push(i); });
+
+  return (
+    <div>
+      <div className="alert alert-info" style={{marginBottom:16}}>📬 These items are on order and expected to arrive soon. Contact us to reserve or for more information.</div>
+      {allItems.length===0&&<div className="empty"><div className="ei">📬</div><h3>No Incoming Stock</h3><p>Check back soon for new arrivals.</p></div>}
+      <div className="prod-grid">
+        {Object.entries(grouped).map(([name,items])=>{
+          const earliest = items.map(i=>i.expected_date).filter(Boolean).sort()[0];
+          const totalQty = items.reduce((s,i)=>s+(i.ordered_qty-(i.received_qty||0)),0);
+          return (
+            <div key={name} className="prod-card">
+              <div className="prod-card-img"><span style={{fontSize:40}}>📬</span></div>
+              <div className="prod-card-body">
+                <div className="prod-card-name">{name}</div>
+                {items[0]?.barcode&&<div style={{fontSize:10,color:"var(--text3)",marginBottom:4}}>Barcode: {items[0].barcode}</div>}
+                <div className="prod-stock" style={{marginBottom:8}}>{totalQty} unit{totalQty!==1?"s":""} incoming</div>
+                {earliest&&<div style={{fontSize:11,color:"var(--accent)",fontWeight:600,marginBottom:8}}>📅 Expected: {earliest}</div>}
+                <div className="alert alert-info" style={{padding:"6px 10px",fontSize:11,marginBottom:0}}>Contact us to reserve · No pricing shown</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ActivityLogPage({ activityLog, setActivityLog }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
