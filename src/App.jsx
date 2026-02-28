@@ -461,14 +461,12 @@ export default function App() {
 
   const logActivity = async (action, details, entityType="", entityId="") => {
     const entry = {
-      id: `act-${Date.now()}`,
-      action, details, entity_type: entityType, entity_id: entityId,
+      action, details, entity_type: entityType, entity_id: String(entityId||""),
       user_name: "Admin", timestamp: new Date().toISOString()
     };
     try {
       await supabase.from("activity_log").insert(entry);
-    } catch(e) {}
-    setActivityLog(prev=>[entry,...prev].slice(0,500));
+    } catch(e) { console.warn("Activity log error:", e); }
   };
 
   // ── Toast ──
@@ -1056,8 +1054,27 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
         clearance_price:obj.clearance_price?parseFloat(obj.clearance_price):null,
         active:true
       };
+      // Create supplier record if supplier name provided and not already existing
+      let supplierId = null;
+      if (obj.supplier) {
+        const existing = suppliers.find(s=>s.name.toLowerCase()===obj.supplier.toLowerCase());
+        if (existing) {
+          supplierId = existing.id;
+        } else {
+          const {data:newSupp} = await supabase.from("suppliers").insert({name:obj.supplier}).select().single();
+          if (newSupp) {
+            supplierId = newSupp.id;
+            setSuppliers(p=>[...p, newSupp]);
+          }
+        }
+      }
+      if (supplierId) prod.supplier_id = supplierId;
       const {data, error} = await supabase.from("products").insert(prod).select().single();
-      if (data) imported.push(data);
+      if (data) {
+        imported.push(data);
+        // Log the import
+        await supabase.from("activity_log").insert({action:"product_added",details:`Imported: ${prod.name}`,entity_type:"product",entity_id:String(data.id||""),user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+      }
       else if (error) { lastError = error.message; console.error("Import error:", prod.name, error.message); }
     }
     if (imported.length > 0) {
@@ -1065,7 +1082,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
       showToast(`${imported.length} products imported`);
       setShowImport(false);
     } else {
-      alert("Import failed.\n\nSupabase error:\n" + (lastError||"Unknown error") + "\n\nCheck that you ran the fix-products-defaults.sql in Supabase.");
+      showToast("Import failed: " + (lastError||"Unknown error"), "err");
     }
   };
 
@@ -1157,6 +1174,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
                     </td>
                     <td>
                       <div className="tbl-actions">
+                        <button className="btn btn-ghost btn-xs" onClick={()=>setShowHistory(p)}>History</button>
                         <button className="btn btn-secondary btn-xs" onClick={()=>{setEditing(p);setShowModal(true);}}>Edit</button>
                         {!p.active?<button className="btn btn-ghost btn-xs" onClick={()=>restore(p.id)}>Restore</button>:<button className="btn btn-warn btn-xs" onClick={async()=>{await supabase.from("products").update({active:false}).eq("id",p.id);await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");}}>Archive</button>}
                         <button className="btn btn-danger btn-xs" onClick={()=>hardDelete(p.id)}>Del</button>
@@ -1175,6 +1193,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
         </div>
       </div>
 
+      {showHistory&&<ProductHistoryModal product={showHistory} orders={orders} transfers={transfers} onClose={()=>setShowHistory(null)}/>}
       {showModal&&<ProductModal product={editing} suppliers={suppliers} categories={allCats.filter(c=>c!=="All")} onSave={async(data)=>{
   if(editing){
     await supabase.from("products").update(data).eq("id",editing.id);
@@ -1194,6 +1213,105 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
 }} onClose={()=>setShowModal(false)}/>}
       {showImport&&<ImportModal onImport={handleImportCSV} onDownloadTemplate={downloadTemplate} onClose={()=>setShowImport(false)}/>}
     </>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── PRODUCT HISTORY MODAL ───────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function ProductHistoryModal({ product, orders, transfers, onClose }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(()=>{
+    supabase.from("activity_log")
+      .select("*")
+      .eq("entity_id", String(product.id))
+      .order("timestamp",{ascending:false})
+      .limit(200)
+      .then(({data})=>{ setLogs(data||[]); setLoading(false); });
+  },[product.id]);
+
+  // Build history from orders, transfers, stock takes containing this product
+  const orderEvents = orders.flatMap(o=>
+    (o.items||[]).filter(i=>i.product_id===product.id).map(i=>({
+      type:"order", date:o.created_at||o.date, icon:"🛒",
+      label:"Order placed", color:"var(--accent)",
+      detail:`${i.qty} units @ ${fmt(i.unit_price)} — Order ${o.id} (${o.customer_name||""})`
+    }))
+  );
+
+  const transferEvents = transfers.flatMap(t=>
+    (t.items||[]).filter(i=>i.product_id===product.id).map(i=>({
+      type:"transfer", date:t.created_at||t.date, icon:"🏬",
+      label:"Transferred to store", color:"var(--accent3)",
+      detail:`${i.qty} units → ${t.store_name} — Transfer ${t.id}`
+    }))
+  );
+
+  const logEvents = logs.map(l=>({
+    type:l.action, date:l.timestamp, icon:
+      l.action==="product_added"?"➕":
+      l.action==="product_updated"?"✏️":
+      l.action==="product_archived"?"📦":
+      l.action==="stock_take"?"🔢":"📋",
+    label: l.action?.replace(/_/g," "),
+    color: l.action==="product_added"?"var(--success)":
+           l.action==="product_updated"?"var(--accent)":
+           l.action==="product_archived"?"var(--warn)":"var(--text2)",
+    detail: l.details
+  }));
+
+  const allEvents = [...orderEvents, ...transferEvents, ...logEvents]
+    .sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  return (
+    <div className="overlay">
+      <div className="modal modal-md">
+        <div className="modal-head">
+          <div>
+            <h2>📋 Product History</h2>
+            <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>{product.name}</div>
+          </div>
+          <button className="xbtn" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body" style={{maxHeight:500,overflowY:"auto"}}>
+          <div style={{display:"flex",gap:16,marginBottom:16,flexWrap:"wrap"}}>
+            <div className="card" style={{flex:1,minWidth:120,padding:12,textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:"var(--accent)"}}>{product.stock}</div>
+              <div style={{fontSize:11,color:"var(--text3)"}}>Current Stock</div>
+            </div>
+            <div className="card" style={{flex:1,minWidth:120,padding:12,textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:"var(--success)"}}>{orderEvents.reduce((s,e)=>s+(parseInt(e.detail)||0),0)||orderEvents.length}</div>
+              <div style={{fontSize:11,color:"var(--text3)"}}>Orders ({orderEvents.length})</div>
+            </div>
+            <div className="card" style={{flex:1,minWidth:120,padding:12,textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:"var(--accent3)"}}>{transferEvents.length}</div>
+              <div style={{fontSize:11,color:"var(--text3)"}}>Transfers</div>
+            </div>
+          </div>
+
+          {loading&&<div style={{textAlign:"center",padding:32,color:"var(--text3)"}}>Loading history…</div>}
+          {!loading&&allEvents.length===0&&<div className="empty"><div className="ei">📋</div><p>No history recorded yet.</p></div>}
+          {!loading&&allEvents.map((e,i)=>(
+            <div key={i} style={{display:"flex",gap:12,padding:"10px 0",borderBottom:"1px solid var(--border)",alignItems:"flex-start"}}>
+              <div style={{width:32,height:32,borderRadius:8,background:`${e.color}18`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{e.icon}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:12,fontWeight:600,color:e.color}}>{e.label}</span>
+                  <span style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>{new Date(e.date).toLocaleString()}</span>
+                </div>
+                <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>{e.detail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1942,7 +2060,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
   });
 
   const logAct = async(action,details,entity_type="",entity_id="") => {
-    await supabase.from("activity_log").insert({action,details,entity_type,entity_id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+    await supabase.from("activity_log").insert({action,details,entity_type,entity_id:String(entity_id||""),user_name:"Admin",timestamp:new Date().toISOString()}).catch(e=>console.warn("Log err:",e));
   };
 
   const approve=async(id,type)=>{
