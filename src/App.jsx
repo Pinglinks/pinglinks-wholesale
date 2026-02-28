@@ -2537,13 +2537,17 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
         </div>
       )}
 
-      {tab==="form"&&<POFormPage po={editing} suppliers={suppliers} products={products} settings={settings} showToast={showToast}
+      {tab==="form"&&<POFormPage po={editing} suppliers={suppliers} products={products} setProducts={setProducts} settings={settings} showToast={showToast}
         onSave={async(data)=>{
           if(editing){
-            await supabase.from("purchase_orders").update({supplier_id:data.supplier_id,supplier_name:data.supplier_name,expected_date:data.expected_date,shipping_cost:data.shipping_cost,lot_ref:data.lot_ref,notes:data.notes,status:data.status}).eq("id",editing.id);
+            // Auto-determine status from received quantities
+            const allReceived = data.items.every(i=>i.received_qty>=i.ordered_qty);
+            const anyReceived = data.items.some(i=>i.received_qty>0);
+            const autoStatus = allReceived?"received":anyReceived?"partial":data.status==="cancelled"?"cancelled":"open";
+            await supabase.from("purchase_orders").update({supplier_id:data.supplier_id,supplier_name:data.supplier_name,expected_date:data.expected_date,shipping_cost:data.shipping_cost,lot_ref:data.lot_ref,notes:data.notes,status:autoStatus}).eq("id",editing.id);
             await supabase.from("purchase_order_items").delete().eq("po_id",editing.id);
             await supabase.from("purchase_order_items").insert(data.items.map(i=>({...i,po_id:editing.id})));
-            setPurchaseOrders(prev=>prev.map(p=>p.id===editing.id?{...p,...data}:p));
+            setPurchaseOrders(prev=>prev.map(p=>p.id===editing.id?{...p,...data,status:autoStatus}:p));
             showToast("Purchase order updated");
           } else {
             const id = "PO-"+Date.now();
@@ -2566,7 +2570,7 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── PO FORM PAGE ────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function POFormPage({ po, suppliers, products, settings, showToast, onSave, onCancel }) {
+function POFormPage({ po, suppliers, products, setProducts, settings, showToast, onSave, onCancel }) {
   const [f, setF] = useState({
     supplier_id: po?.supplier_id||"",
     supplier_name: po?.supplier_name||"",
@@ -2580,6 +2584,7 @@ function POFormPage({ po, suppliers, products, settings, showToast, onSave, onCa
   const [productSearch, setProductSearch] = useState("");
   const [showPicker, setShowPicker] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showNewProductModal, setShowNewProductModal] = useState(false);
 
   const pickerResults = products.filter(p=>p.active&&(
     p.name?.toLowerCase().includes(productSearch.toLowerCase())||
@@ -2594,7 +2599,7 @@ function POFormPage({ po, suppliers, products, settings, showToast, onSave, onCa
   };
 
   const addNewItem = () => {
-    setItems(prev=>[...prev,{product_id:"",product_name:"",barcode:"",ordered_qty:1,received_qty:0,unit_cost:"",note:"",is_new:true}]);
+    setShowNewProductModal(true);
   };
 
   const updateItem = (idx,key,val) => setItems(prev=>prev.map((it,i)=>i===idx?{...it,[key]:val}:it));
@@ -2605,6 +2610,36 @@ function POFormPage({ po, suppliers, products, settings, showToast, onSave, onCa
   const handleSave = async () => {
     if (!items.length) { showToast("Add at least one item","err"); return; }
     setSaving(true);
+
+    // For each item where received_qty changed vs what was previously saved,
+    // update product stock with weighted average cost
+    const previousItems = po?.items || [];
+    for (const item of items) {
+      const prevItem = previousItems.find(p=>p.product_id===item.product_id);
+      const prevReceived = prevItem?.received_qty || 0;
+      const nowReceived = parseInt(item.received_qty) || 0;
+      const newlyReceived = nowReceived - prevReceived;
+
+      if (newlyReceived > 0 && item.product_id) {
+        const prod = products.find(p=>p.id===item.product_id);
+        if (prod) {
+          const newCost = parseFloat(item.unit_cost) || 0;
+          const existingValue = prod.stock * (prod.cost || 0);
+          const newValue = newlyReceived * newCost;
+          const newStock = prod.stock + newlyReceived;
+          const avgCost = newStock > 0 ? Math.round((existingValue + newValue) / newStock) : newCost;
+          await supabase.from("products").update({stock:newStock, cost:avgCost, active:true}).eq("id",prod.id);
+          setProducts(prev=>prev.map(p=>p.id===prod.id?{...p,stock:newStock,cost:avgCost,active:true}:p));
+          await supabase.from("activity_log").insert({
+            action:"stock_received",
+            details:`Received ${newlyReceived} units of ${prod.name} @ ${fmt(newCost)} (avg cost now ${fmt(avgCost)}) via PO ${po?.id||"new"}`,
+            entity_type:"product", entity_id:String(prod.id),
+            user_name:"Admin", timestamp:new Date().toISOString()
+          }).catch(()=>{});
+        }
+      }
+    }
+
     await onSave({...f, items: items.map(i=>({
       product_id: i.product_id||null,
       product_name: i.product_name||"",
@@ -2619,6 +2654,46 @@ function POFormPage({ po, suppliers, products, settings, showToast, onSave, onCa
 
   return (
     <div>
+      {showNewProductModal&&<ProductModal
+        product={null}
+        suppliers={suppliers}
+        categories={[...new Set(products.map(p=>p.category).filter(Boolean))]}
+        onClose={()=>setShowNewProductModal(false)}
+        onSave={async(data)=>{
+          // Save full product to DB
+          const prod = {
+            barcode:data.barcode||"",brand:data.brand||"",name:data.name,
+            category:data.category||"Uncategorized",
+            cost:parseFloat(data.cost)||0,
+            wholesale_price:parseFloat(data.wholesale_price)||0,
+            retail_price:parseFloat(data.retail_price)||0,
+            stock:0, // will be received via PO
+            low_stock_threshold:parseInt(data.low_stock_threshold)||5,
+            min_order:parseInt(data.min_order)||1,
+            description:data.description||"",
+            is_clearance:data.is_clearance||false,
+            clearance_price:data.clearance_price||null,
+            image_url:data.image_url||null,
+            active:false, // not active until received
+            created_at:new Date().toISOString()
+          };
+          const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
+          if(error||!saved){ alert("Failed to save product: "+(error?.message||"unknown error")); return; }
+          setProducts(prev=>[saved,...prev]);
+          // Add to PO items list
+          setItems(prev=>[...prev,{
+            product_id:saved.id,
+            product_name:saved.name,
+            barcode:saved.barcode||"",
+            ordered_qty:1,
+            received_qty:0,
+            unit_cost:saved.cost||"",
+            note:"",
+            is_new:false
+          }]);
+          setShowNewProductModal(false);
+        }}
+      />}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <h3 style={{margin:0}}>{po?"Edit Purchase Order":"New Purchase Order"} {po&&<code style={{fontSize:14,marginLeft:8}}>{po.id}</code>}</h3>
         <button className="btn btn-ghost btn-sm" onClick={onCancel}>← Back to List</button>
@@ -2682,27 +2757,68 @@ function POFormPage({ po, suppliers, products, settings, showToast, onSave, onCa
         </div>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>#</th><th>Product Name</th><th>Barcode</th><th>Ordered Qty</th><th>Unit Cost (J$)</th><th>Total</th><th>Note</th><th></th></tr></thead>
+            <thead><tr>
+              <th>#</th>
+              <th>Product Name</th>
+              <th>Barcode</th>
+              <th style={{textAlign:"center"}}>Ordered Qty</th>
+              <th style={{textAlign:"center"}}>Received Qty</th>
+              <th style={{textAlign:"right"}}>Unit Cost (J$)</th>
+              <th style={{textAlign:"right"}}>Total</th>
+              <th>Note</th>
+              <th></th>
+            </tr></thead>
             <tbody>
-              {items.length===0&&<tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No items added yet. Search for a product or click "+ New Item".</td></tr>}
-              {items.map((item,idx)=>(
-                <tr key={idx}>
-                  <td style={{color:"var(--text3)",fontWeight:600}}>{idx+1}</td>
-                  <td><input value={item.product_name} onChange={e=>updateItem(idx,"product_name",e.target.value)} style={{width:"100%",minWidth:180}}/></td>
-                  <td><input value={item.barcode} onChange={e=>updateItem(idx,"barcode",e.target.value)} style={{width:110}}/></td>
-                  <td><input type="number" min={1} value={item.ordered_qty} onChange={e=>updateItem(idx,"ordered_qty",e.target.value)} style={{width:70,textAlign:"center"}}/></td>
-                  <td><input type="number" min={0} value={item.unit_cost} onChange={e=>updateItem(idx,"unit_cost",e.target.value)} placeholder="0" style={{width:100,textAlign:"right"}}/></td>
-                  <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt((+item.ordered_qty||0)*(+item.unit_cost||0))}</td>
-                  <td><input value={item.note||""} onChange={e=>updateItem(idx,"note",e.target.value)} placeholder="Optional" style={{width:120}}/></td>
-                  <td><button className="btn btn-danger btn-xs" onClick={()=>removeItem(idx)}>✕</button></td>
-                </tr>
-              ))}
+              {items.length===0&&<tr><td colSpan={9} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No items added yet. Search for a product or click "+ New Item".</td></tr>}
+              {items.map((item,idx)=>{
+                const prod = products.find(p=>p.id===item.product_id);
+                const fullyReceived = (item.received_qty||0) >= item.ordered_qty;
+                return (
+                  <tr key={idx} style={{background:fullyReceived?"rgba(34,197,94,.05)":""}}>
+                    <td style={{color:"var(--text3)",fontWeight:600}}>{idx+1}</td>
+                    <td>
+                      {item.is_new
+                        ? <input value={item.product_name} onChange={e=>updateItem(idx,"product_name",e.target.value)} style={{width:"100%",minWidth:180}}/>
+                        : <div>
+                            <div style={{fontSize:13,fontWeight:500}}>{item.product_name}</div>
+                            {prod&&<div style={{fontSize:10,color:"var(--text3)"}}>In stock: {prod.stock} · Cost: {fmt(prod.cost)}</div>}
+                          </div>
+                      }
+                    </td>
+                    <td>
+                      {item.is_new
+                        ? <input value={item.barcode} onChange={e=>updateItem(idx,"barcode",e.target.value)} style={{width:110}}/>
+                        : <code style={{fontSize:11,color:"var(--text3)"}}>{item.barcode||"—"}</code>
+                      }
+                    </td>
+                    <td style={{textAlign:"center"}}>
+                      <input type="number" min={1} value={item.ordered_qty} onChange={e=>updateItem(idx,"ordered_qty",e.target.value)} style={{width:70,textAlign:"center"}}/>
+                    </td>
+                    <td style={{textAlign:"center"}}>
+                      <input type="number" min={0} max={item.ordered_qty} value={item.received_qty||0}
+                        onChange={e=>updateItem(idx,"received_qty",Math.min(+item.ordered_qty, Math.max(0,+e.target.value)))}
+                        style={{width:70,textAlign:"center",
+                          background:fullyReceived?"rgba(34,197,94,.1)":+item.received_qty>0?"rgba(255,170,0,.1)":"",
+                          borderColor:fullyReceived?"var(--success)":+item.received_qty>0?"var(--warn)":"var(--border)"
+                        }}/>
+                      {fullyReceived&&<div style={{fontSize:9,color:"var(--success)",marginTop:1}}>✓ complete</div>}
+                    </td>
+                    <td style={{textAlign:"right"}}>
+                      <input type="number" min={0} value={item.unit_cost} onChange={e=>updateItem(idx,"unit_cost",e.target.value)} placeholder="0" style={{width:100,textAlign:"right"}}/>
+                    </td>
+                    <td style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>{fmt((+item.ordered_qty||0)*(+item.unit_cost||0))}</td>
+                    <td><input value={item.note||""} onChange={e=>updateItem(idx,"note",e.target.value)} placeholder="Optional" style={{width:110}}/></td>
+                    <td><button className="btn btn-danger btn-xs" onClick={()=>removeItem(idx)}>✕</button></td>
+                  </tr>
+                );
+              })}
               {items.length>0&&(
                 <tr style={{background:"var(--bg3)",fontWeight:700}}>
-                  <td colSpan={3} style={{textAlign:"right",paddingRight:12}}>Totals:</td>
+                  <td colSpan={3} style={{textAlign:"right",paddingRight:12,fontSize:12}}>Totals:</td>
                   <td style={{textAlign:"center"}}>{totalUnits} units</td>
+                  <td style={{textAlign:"center",color:"var(--success)"}}>{items.reduce((s,i)=>s+(+i.received_qty||0),0)} received</td>
                   <td></td>
-                  <td style={{color:"var(--accent)"}}>{fmt(items.reduce((s,i)=>s+(+i.ordered_qty||0)*(+i.unit_cost||0),0))}</td>
+                  <td style={{textAlign:"right",color:"var(--accent)"}}>{fmt(items.reduce((s,i)=>s+(+i.ordered_qty||0)*(+i.unit_cost||0),0))}</td>
                   <td colSpan={2}></td>
                 </tr>
               )}
@@ -2969,42 +3085,133 @@ function ActivityLogPage({ activityLog, setActivityLog }) {
 }
 
 function AnalyticsPage({ products, orders, customers, transfers }) {
+  const todayStr = new Date().toISOString().slice(0,10);
+  const firstOfMonth = new Date(); firstOfMonth.setDate(1);
+  const firstOfMonthStr = firstOfMonth.toISOString().slice(0,10);
+
+  const getPreset = (p) => {
+    const now = new Date();
+    const d = (n) => { const d=new Date(now); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+    const m = (n) => { const d=new Date(now); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,10); };
+    if(p==="today") return [todayStr, todayStr];
+    if(p==="yesterday") return [d(-1), d(-1)];
+    if(p==="7days") return [d(-7), todayStr];
+    if(p==="30days") return [d(-30), todayStr];
+    if(p==="thismonth") return [firstOfMonthStr, todayStr];
+    if(p==="lastmonth") { const s=new Date(now.getFullYear(),now.getMonth()-1,1); const e=new Date(now.getFullYear(),now.getMonth(),0); return [s.toISOString().slice(0,10),e.toISOString().slice(0,10)]; }
+    if(p==="thisyear") return [`${now.getFullYear()}-01-01`, todayStr];
+    return [firstOfMonthStr, todayStr];
+  };
+
+  const [preset, setPreset] = useState("thismonth");
+  const [fromDate, setFromDate] = useState(firstOfMonthStr);
+  const [toDate, setToDate] = useState(todayStr);
+  const [keyword, setKeyword] = useState("");
+  const [reportType, setReportType] = useState("all");
+
+  const applyPreset = (p) => {
+    setPreset(p);
+    if(p!=="custom") { const [f,t]=getPreset(p); setFromDate(f); setToDate(t); }
+  };
+
+  const filteredOrders = useMemo(()=>orders.filter(o=>{
+    if(o.status==="cancelled") return false;
+    if(o.date < fromDate || o.date > toDate) return false;
+    if(keyword) {
+      const kw=keyword.toLowerCase();
+      if(!o.customer_name?.toLowerCase().includes(kw)&&!o.id?.toLowerCase().includes(kw)&&!o.payment_method?.toLowerCase().includes(kw)) return false;
+    }
+    return true;
+  }),[orders,fromDate,toDate,keyword]);
+
   const activeProducts=products.filter(p=>p.active);
-  const paidOrders=orders.filter(o=>o.status!=="cancelled");
-  const totalRevenue=paidOrders.reduce((s,o)=>s+o.total,0);
-  const totalTax=paidOrders.reduce((s,o)=>s+o.tax_amount,0);
-  const totalSubtotal=paidOrders.reduce((s,o)=>s+o.subtotal,0);
-  const avgOrderVal=paidOrders.length?Math.round(totalRevenue/paidOrders.length):0;
+  const totalRevenue=filteredOrders.reduce((s,o)=>s+o.total,0);
+  const totalTax=filteredOrders.reduce((s,o)=>s+o.tax_amount,0);
+  const totalSubtotal=filteredOrders.reduce((s,o)=>s+o.subtotal,0);
+  const avgOrderVal=filteredOrders.length?Math.round(totalRevenue/filteredOrders.length):0;
   const totalInventoryCost=activeProducts.reduce((s,p)=>s+p.cost*p.stock,0);
   const totalInventoryRetail=activeProducts.reduce((s,p)=>s+p.retail_price*p.stock,0);
   const potentialMargin=totalInventoryRetail-totalInventoryCost;
 
-  // Revenue by customer
   const byCust={};
-  paidOrders.forEach(o=>{ byCust[o.customer_name]=(byCust[o.customer_name]||0)+o.total; });
+  filteredOrders.forEach(o=>{ byCust[o.customer_name]=(byCust[o.customer_name]||0)+o.total; });
   const custRanked=Object.entries(byCust).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const maxCustRev=custRanked[0]?.[1]||1;
 
-  // Revenue by category (from order items)
   const byCat={};
-  paidOrders.forEach(o=>{ (o.items||[]).forEach(item=>{ const p=products.find(x=>x.id===item.product_id); const cat=p?.category||"Unknown"; byCat[cat]=(byCat[cat]||0)+item.qty*item.unit_price; }); });
+  filteredOrders.forEach(o=>{ (o.items||[]).forEach(item=>{ const p=products.find(x=>x.id===item.product_id); const cat=p?.category||"Unknown"; byCat[cat]=(byCat[cat]||0)+item.qty*item.unit_price; }); });
   const catRanked=Object.entries(byCat).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const maxCatRev=catRanked[0]?.[1]||1;
 
-  // Orders by month
   const byMonth={};
-  paidOrders.forEach(o=>{ const m=o.date?.slice(0,7)||"Unknown"; byMonth[m]=(byMonth[m]||0)+o.total; });
-  const monthsSorted=Object.entries(byMonth).sort((a,b)=>a[0].localeCompare(b[0])).slice(-6);
+  filteredOrders.forEach(o=>{ const m=o.date?.slice(0,7)||"Unknown"; byMonth[m]=(byMonth[m]||0)+o.total; });
+  const monthsSorted=Object.entries(byMonth).sort((a,b)=>a[0].localeCompare(b[0]));
   const maxMonth=Math.max(...monthsSorted.map(([,v])=>v),1);
 
-  // Payment methods
   const byPay={};
-  paidOrders.forEach(o=>{ const m=o.payment_method||"Unspecified"; byPay[m]=(byPay[m]||0)+1; });
+  filteredOrders.forEach(o=>{ const m=o.payment_method||"Unspecified"; byPay[m]=(byPay[m]||0)+o.total; });
+
+  const byProduct={};
+  filteredOrders.forEach(o=>{ (o.items||[]).forEach(item=>{ if(!byProduct[item.product_id]) byProduct[item.product_id]={name:item.name,qty:0,revenue:0}; byProduct[item.product_id].qty+=item.qty; byProduct[item.product_id].revenue+=item.qty*item.unit_price; }); });
+  const prodRanked=Object.values(byProduct).sort((a,b)=>b.revenue-a.revenue).slice(0,10);
+
+  const downloadReport = (type) => {
+    let rows, filename;
+    if(type==="sales_by_date"){
+      rows=[["Date","Invoice #","Customer","Payment","Subtotal","Tax","Total","Status"],
+        ...filteredOrders.map(o=>[o.date,o.id,o.customer_name,o.payment_method||"—",o.subtotal,o.tax_amount,o.total,o.status])];
+      filename=`sales_by_date_${fromDate}_${toDate}.csv`;
+    } else if(type==="sales_by_customer"){
+      rows=[["Customer","Orders","Total Revenue"],
+        ...Object.entries(byCust).sort((a,b)=>b[1]-a[1]).map(([name,total])=>[name,filteredOrders.filter(o=>o.customer_name===name).length,total])];
+      filename=`sales_by_customer_${fromDate}_${toDate}.csv`;
+    } else if(type==="sales_by_product"){
+      rows=[["Product","Units Sold","Revenue"],
+        ...prodRanked.map(p=>[p.name,p.qty,p.revenue])];
+      filename=`sales_by_product_${fromDate}_${toDate}.csv`;
+    } else if(type==="sales_by_category"){
+      rows=[["Category","Revenue"],
+        ...catRanked.map(([cat,v])=>[cat,v])];
+      filename=`sales_by_category_${fromDate}_${toDate}.csv`;
+    } else if(type==="payments_by_type"){
+      rows=[["Payment Method","Orders","Total"],
+        ...Object.entries(byPay).map(([method,total])=>[method,filteredOrders.filter(o=>o.payment_method===method).length,total])];
+      filename=`payments_by_type_${fromDate}_${toDate}.csv`;
+    } else if(type==="tax"){
+      rows=[["Date","Invoice #","Customer","Subtotal","Tax Rate","Tax Amount","Total"],
+        ...filteredOrders.map(o=>[o.date,o.id,o.customer_name,o.subtotal,`${o.tax_rate||0}%`,o.tax_amount,o.total])];
+      filename=`tax_report_${fromDate}_${toDate}.csv`;
+    } else if(type==="unpaid"){
+      const unpaid=orders.filter(o=>o.status==="pending"&&o.date>=fromDate&&o.date<=toDate);
+      rows=[["Invoice #","Customer","Date","Total","Type"],
+        ...unpaid.map(o=>[o.id,o.customer_name,o.date,o.total,o.type||"standard"])];
+      filename=`unpaid_invoices_${fromDate}_${toDate}.csv`;
+    }
+    if(rows) downloadCSV(rows, filename);
+  };
+
+  const presets = [
+    {id:"today",label:"Today"},{id:"yesterday",label:"Yesterday"},
+    {id:"7days",label:"Last 7 Days"},{id:"30days",label:"Last 30 Days"},
+    {id:"thismonth",label:"This Month"},{id:"lastmonth",label:"Last Month"},
+    {id:"thisyear",label:"This Year"},{id:"custom",label:"Custom"},
+  ];
+
+  const reportRows = [
+    {id:"sales_by_date",     label:"Sales by Date",            hasKeyword:false},
+    {id:"sales_by_customer", label:"Sales by Customer",        hasKeyword:true, kwPlaceholder:"Customer name…"},
+    {id:"payments_by_type",  label:"Payments Received by Type",hasKeyword:true, kwPlaceholder:"Payment type…"},
+    {id:"sales_by_product",  label:"Sales by Product",         hasKeyword:true, kwPlaceholder:"Product name…"},
+    {id:"sales_by_category", label:"Sales by Category",        hasKeyword:false},
+    {id:"tax",               label:"Sales by Tax",             hasKeyword:false},
+    {id:"unpaid",            label:"Unpaid Invoices",          hasKeyword:false},
+  ];
 
   return (
     <div>
-      <div className="stats-grid">
-        <div className="stat c1"><div className="stat-label">Total Revenue</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalRevenue)}</div><div className="stat-sub">{paidOrders.length} orders</div></div>
+      {/* Summary stats */}
+      <div className="stats-grid" style={{marginBottom:20}}>
+        <div className="stat c1"><div className="stat-label">Total Revenue</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalRevenue)}</div><div className="stat-sub">{filteredOrders.length} orders</div></div>
         <div className="stat c2"><div className="stat-label">Avg Order Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(avgOrderVal)}</div></div>
         <div className="stat c3"><div className="stat-label">Tax Collected</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalTax)}</div></div>
         <div className="stat c4"><div className="stat-label">Inventory Cost</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalInventoryCost)}</div></div>
@@ -3012,9 +3219,67 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
         <div className="stat c6"><div className="stat-label">Potential Margin</div><div className="stat-val" style={{fontSize:18}}>{fmt(potentialMargin)}</div></div>
       </div>
 
+      {/* Date range selector */}
+      <div className="card" style={{marginBottom:20}}>
+        <div className="card-header"><h3>📅 Date Range</h3>
+          <div style={{fontSize:12,color:"var(--text3)"}}>{fromDate} → {toDate} · {filteredOrders.length} orders</div>
+        </div>
+        <div className="card-body">
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
+            {presets.map(p=>(
+              <button key={p.id} className={`btn btn-sm ${preset===p.id?"btn-primary":"btn-secondary"}`} onClick={()=>applyPreset(p.id)}>{p.label}</button>
+            ))}
+          </div>
+          {preset==="custom"&&(
+            <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+              <div className="form-group" style={{margin:0}}>
+                <label style={{fontSize:11}}>From</label>
+                <input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} style={{width:"auto"}}/>
+              </div>
+              <div className="form-group" style={{margin:0}}>
+                <label style={{fontSize:11}}>To</label>
+                <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{width:"auto"}}/>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sales Reports table (POS-style) */}
+      <div className="card" style={{marginBottom:20}}>
+        <div className="card-header"><h3>📊 Sales Reports</h3></div>
+        <div className="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style={{width:220}}>Report Type</th>
+                <th>Date Range</th>
+                <th>Optional Keyword</th>
+                <th style={{width:120}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {reportRows.map(row=>(
+                <tr key={row.id}>
+                  <td style={{fontWeight:500,fontSize:13}}>{row.label}</td>
+                  <td style={{fontSize:12,color:"var(--text2)"}}>📅 {fromDate} — {toDate}</td>
+                  <td>
+                    {row.hasKeyword&&<input value={keyword} onChange={e=>setKeyword(e.target.value)} placeholder={row.kwPlaceholder} style={{width:200,padding:"4px 8px",border:"1px solid var(--border)",borderRadius:6,fontSize:12}}/>}
+                  </td>
+                  <td>
+                    <button className="btn btn-primary btn-sm" onClick={()=>downloadReport(row.id)}>⬇ Download</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Charts */}
       <div className="two-col" style={{gap:18,marginBottom:18}}>
         <div className="card">
-          <div className="card-header"><h3>Revenue by Month</h3></div>
+          <div className="card-header"><h3>Revenue by Month</h3><button className="btn btn-ghost btn-xs" onClick={()=>downloadReport("sales_by_date")}>⬇ CSV</button></div>
           <div className="card-body">
             <div className="chart-bar-wrap">
               {monthsSorted.map(([m,v])=>(
@@ -3024,13 +3289,12 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
                   <span style={{fontSize:11,textAlign:"right",color:"var(--accent)",fontWeight:600}}>{fmt(v)}</span>
                 </div>
               ))}
-              {monthsSorted.length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data yet.</div>}
+              {monthsSorted.length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data in range.</div>}
             </div>
           </div>
         </div>
-
         <div className="card">
-          <div className="card-header"><h3>Revenue by Category</h3></div>
+          <div className="card-header"><h3>Revenue by Category</h3><button className="btn btn-ghost btn-xs" onClick={()=>downloadReport("sales_by_category")}>⬇ CSV</button></div>
           <div className="card-body">
             <div className="chart-bar-wrap">
               {catRanked.map(([cat,v])=>(
@@ -3040,40 +3304,59 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
                   <span style={{fontSize:11,textAlign:"right",color:"var(--accent2)",fontWeight:600}}>{fmt(v)}</span>
                 </div>
               ))}
-              {catRanked.length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No sales data yet.</div>}
+              {catRanked.length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No sales data in range.</div>}
             </div>
           </div>
         </div>
       </div>
 
-      <div className="two-col" style={{gap:18}}>
+      <div className="two-col" style={{gap:18,marginBottom:18}}>
         <div className="card">
-          <div className="card-header"><h3>Top Customers by Revenue</h3></div>
+          <div className="card-header"><h3>Top Customers by Revenue</h3><button className="btn btn-ghost btn-xs" onClick={()=>downloadReport("sales_by_customer")}>⬇ CSV</button></div>
           <div className="card-body">
             <div className="chart-bar-wrap">
               {custRanked.map(([name,v])=>(
                 <div key={name} className="chart-bar-row">
-                  <span style={{fontSize:11,color:"var(--text2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name.slice(0,16)}{name.length>16?"…":""}</span>
+                  <span style={{fontSize:11,color:"var(--text2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name?.slice(0,16)}{(name?.length||0)>16?"…":""}</span>
                   <div className="chart-bar-bg"><div className="chart-bar-fill" style={{width:`${(v/maxCustRev)*100}%`,background:"var(--accent3)"}}/></div>
                   <span style={{fontSize:11,textAlign:"right",color:"var(--accent3)",fontWeight:600}}>{fmt(v)}</span>
                 </div>
               ))}
-              {custRanked.length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data yet.</div>}
+              {custRanked.length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data in range.</div>}
             </div>
           </div>
         </div>
-
         <div className="card">
-          <div className="card-header"><h3>Payment Methods</h3></div>
+          <div className="card-header"><h3>Top Products by Revenue</h3><button className="btn btn-ghost btn-xs" onClick={()=>downloadReport("sales_by_product")}>⬇ CSV</button></div>
           <div className="card-body">
-            {Object.entries(byPay).map(([method,count])=>(
-              <div key={method} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid var(--border)"}}>
-                <span style={{fontSize:13}}>{method}</span>
-                <span style={{fontWeight:700,color:"var(--accent4)"}}>{count} orders</span>
-              </div>
-            ))}
-            {Object.keys(byPay).length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data yet.</div>}
+            <div className="chart-bar-wrap">
+              {prodRanked.map((p,i)=>{
+                const maxProd=prodRanked[0]?.revenue||1;
+                return (
+                  <div key={i} className="chart-bar-row">
+                    <span style={{fontSize:11,color:"var(--text2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name?.slice(0,16)}{(p.name?.length||0)>16?"…":""}</span>
+                    <div className="chart-bar-bg"><div className="chart-bar-fill" style={{width:`${(p.revenue/maxProd)*100}%`,background:"var(--accent4)"}}/></div>
+                    <span style={{fontSize:11,textAlign:"right",color:"var(--accent4)",fontWeight:600}}>{p.qty} × {fmt(p.revenue)}</span>
+                  </div>
+                );
+              })}
+              {prodRanked.length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data in range.</div>}
+            </div>
           </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><h3>Payment Methods</h3><button className="btn btn-ghost btn-xs" onClick={()=>downloadReport("payments_by_type")}>⬇ CSV</button></div>
+        <div className="card-body" style={{display:"flex",flexWrap:"wrap",gap:12}}>
+          {Object.entries(byPay).map(([method,total])=>(
+            <div key={method} style={{flex:"1 1 180px",background:"var(--bg3)",borderRadius:8,padding:"12px 16px"}}>
+              <div style={{fontSize:12,color:"var(--text3)",marginBottom:4}}>{method}</div>
+              <div style={{fontSize:18,fontWeight:700,color:"var(--accent4)"}}>{fmt(total)}</div>
+              <div style={{fontSize:11,color:"var(--text3)"}}>{filteredOrders.filter(o=>o.payment_method===method).length} orders</div>
+            </div>
+          ))}
+          {Object.keys(byPay).length===0&&<div style={{textAlign:"center",color:"var(--text3)",padding:24,width:"100%"}}>No data in range.</div>}
         </div>
       </div>
     </div>
