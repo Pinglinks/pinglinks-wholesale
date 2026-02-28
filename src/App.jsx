@@ -325,28 +325,36 @@ function downloadJSON(data, filename) {
 function buildInvoiceHTML(order, customer, settings) {
   const INV_LOGO = LOGO_SRC;
   const taxLabel = `GCT (${order.tax_rate}%)`;
+  const NAVY = "#1a3a6b";
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Invoice ${order.id}</title>
 <style>
 body{font-family:Arial,sans-serif;padding:40px;color:#1a202c;font-size:13px}
 .header{display:flex;justify-content:space-between;margin-bottom:32px}
-.brand{font-size:22px;font-weight:800;color:#00d4a8}
 .inv-title{font-size:28px;font-weight:700;color:#2d3748;text-align:right}
-.inv-num{font-size:14px;color:#718096;text-align:right}
+.inv-num{font-size:14px;color:#4a5568;text-align:right}
 .section{margin-bottom:24px}
-.section h4{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#718096;margin-bottom:6px}
+.section h4{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#4a5568;margin-bottom:6px}
 table{width:100%;border-collapse:collapse;margin-bottom:16px}
-th{background:#f7fafc;padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#718096;border-bottom:2px solid #e2e8f0}
+th{background:#eef2f7;padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:${NAVY};border-bottom:2px solid #c8d6e8}
 td{padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:13px}
 .totals-table{width:300px;margin-left:auto}
-.grand-total td{font-weight:700;font-size:15px;color:#00d4a8;border-top:2px solid #e2e8f0}
-.footer{margin-top:40px;padding-top:16px;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#718096}
+.grand-total td{font-weight:700;font-size:15px;color:${NAVY};border-top:2px solid #c8d6e8}
+.footer{margin-top:40px;padding-top:16px;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#4a5568}
 </style></head><body>
 <div class="header">
-  <div><img src="${INV_LOGO}" alt="Pinglinks Cellular" style="height:52px;width:auto;display:block;margin-bottom:6px"/><div style="color:#718096;font-size:12px;margin-top:4px">${settings.company_address}<br>${settings.company_phone} · ${settings.company_email}</div></div>
+  <div>
+    <img src="${INV_LOGO}" alt="Pinglinks Cellular" style="height:52px;width:auto;display:block;margin-bottom:8px"/>
+    <div style="font-size:12px;color:#4a5568;line-height:1.6">
+      Pinglinks Cellular Limited<br>
+      20A South Avenue<br>
+      Kingston 10, Jamaica<br>
+      info@pinglinkscellular.com
+    </div>
+  </div>
   <div><div class="inv-title">INVOICE</div><div class="inv-num">${order.id}</div><div class="inv-num" style="font-size:12px">Date: ${order.date}</div></div>
 </div>
 <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
-  <div class="section"><h4>Bill To</h4><div style="font-weight:600">${customer?.company||order.customer_name}</div><div style="color:#718096">${customer?.tax_id?`TRN: ${customer.tax_id}`:""}</div></div>
+  <div class="section"><h4>Bill To</h4><div style="font-weight:600">${customer?.company||order.customer_name}</div><div style="color:#4a5568">${customer?.tax_id?`TRN: ${customer.tax_id}`:""}</div></div>
   <div class="section" style="text-align:right"><h4>Payment</h4><div>Method: ${order.payment_method||"—"}</div><div>Status: ${order.status}</div>${order.type==="consignment"?`<div>Due: ${order.consignment_due||"—"}</div>`:""}</div>
 </div>
 <table><thead><tr><th>Barcode</th><th>Product</th><th>Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Total</th></tr></thead>
@@ -359,28 +367,27 @@ td{padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:13px}
 ${order.notes?`<div style="margin-top:16px;padding:12px;background:#f7fafc;border-radius:6px"><strong>Notes:</strong> ${order.notes}</div>`:""}
 
 ${(settings.bank_name||settings.payment_link)?`
-<div style="margin-top:28px;border-top:2px solid #e2e8f0;padding-top:20px;display:grid;grid-template-columns:${settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr"};gap:20px">
+<div style="margin-top:28px;border-top:2px solid #c8d6e8;padding-top:20px;display:grid;grid-template-columns:${settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr"};gap:20px">
   ${settings.bank_name?`
-  <div style="background:#f7fafc;border-radius:8px;padding:14px 16px">
-    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#718096;margin-bottom:10px">🏦 Bank Transfer Details</div>
+  <div style="background:#eef2f7;border-radius:8px;padding:14px 16px">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:${NAVY};margin-bottom:10px">🏦 Bank Transfer Details</div>
     <table style="width:auto;margin:0"><tbody>
-      <tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Bank:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_name}</td></tr>
-      ${settings.bank_account_name?`<tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Account Name:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_account_name}</td></tr>`:""}
-      ${settings.bank_account_number?`<tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Account #:</td><td style="font-weight:700;font-size:13px;font-family:monospace;letter-spacing:1px;border:none">${settings.bank_account_number}</td></tr>`:""}
-      ${settings.bank_routing?`<tr><td style="color:#718096;font-size:12px;padding:2px 12px 2px 0;border:none">Sort Code:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_routing}</td></tr>`:""}
+      <tr><td style="color:#4a5568;font-size:12px;padding:2px 12px 2px 0;border:none">Bank:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_name}</td></tr>
+      ${settings.bank_account_name?`<tr><td style="color:#4a5568;font-size:12px;padding:2px 12px 2px 0;border:none">Account Name:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_account_name}</td></tr>`:""}
+      ${settings.bank_account_number?`<tr><td style="color:#4a5568;font-size:12px;padding:2px 12px 2px 0;border:none">Account #:</td><td style="font-weight:700;font-size:13px;font-family:monospace;letter-spacing:1px;border:none">${settings.bank_account_number}</td></tr>`:""}
+      ${settings.bank_routing?`<tr><td style="color:#4a5568;font-size:12px;padding:2px 12px 2px 0;border:none">Branch:</td><td style="font-weight:600;font-size:12px;border:none">${settings.bank_routing}</td></tr>`:""}
     </tbody></table>
-    ${settings.bank_notes?`<div style="margin-top:8px;font-size:11px;color:#00d4a8;font-style:italic">${settings.bank_notes}</div>`:""}
+    ${settings.bank_notes?`<div style="margin-top:8px;font-size:11px;color:${NAVY};font-style:italic">${settings.bank_notes}</div>`:""}
   </div>`:""}
   ${settings.payment_link?`
-  <div style="background:#f7fafc;border-radius:8px;padding:14px 16px;text-align:center">
-    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#718096;margin-bottom:8px">💳 Online Payment</div>
+  <div style="background:#eef2f7;border-radius:8px;padding:14px 16px;text-align:center">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:${NAVY};margin-bottom:8px">💳 Online Payment</div>
     <div style="font-size:20px;font-weight:700;color:#1a202c;margin-bottom:12px">${fmt(order.total)}</div>
-    <a href="${settings.payment_link}" style="display:inline-block;padding:10px 24px;background:#00d4a8;color:#fff;border-radius:8px;font-weight:700;font-size:13px;text-decoration:none">${settings.payment_link_label||"Pay Now"} →</a>
-    <div style="font-size:10px;color:#718096;margin-top:6px;word-break:break-all">${settings.payment_link}</div>
+    <a href="${settings.payment_link}" style="display:inline-block;padding:10px 24px;background:${NAVY};color:#fff;border-radius:8px;font-weight:700;font-size:13px;text-decoration:none;white-space:nowrap">${settings.payment_link_label||"Pay Now"} →</a>
   </div>`:""}
 </div>`:""}
 
-<div class="footer">${settings.company_name} · ${settings.company_address} · ${settings.company_phone}</div>
+<div class="footer">Pinglinks Cellular Limited · 20A South Avenue, Kingston 10, Jamaica · info@pinglinkscellular.com</div>
 </body></html>`;
 }
 
@@ -472,6 +479,7 @@ export default function App() {
   const [transfers, setTransfers] = useState([]);
   const [stockTakes, setStockTakes] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
+  const [customerCarts, setCustomerCarts] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [stores, setStores]     = useState([]);
   const [settings, setSettings] = useState({ company_name:"Pinglinks Cellular", company_address:"Kingston, Jamaica", company_phone:"", company_email:"info@pinglinkscellular.com", currency_symbol:"J$", tax_rate:15, invoice_prefix:"INV", transfer_prefix:"TRF" });
@@ -515,6 +523,7 @@ export default function App() {
         { data: transItems },
         { data: poList },
         { data: poItems },
+        { data: cartList },
       ] = await Promise.all([
         supabase.from("products").select("*").order("name"),
         u.role === "admin" ? supabase.from("profiles").select("*").eq("role","buyer").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
@@ -529,6 +538,7 @@ export default function App() {
         u.role === "admin" ? supabase.from("transfer_items").select("*") : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("purchase_orders").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("purchase_order_items").select("*") : Promise.resolve({data:[]}),
+        u.role === "admin" ? supabase.from("customer_carts").select("*").order("updated_at",{ascending:false}) : Promise.resolve({data:[]}),
       ]);
       if (prods) setProducts(prods);
       if (custs) setCustomers(custs);
@@ -556,6 +566,7 @@ export default function App() {
         }));
         setPurchaseOrders(merged);
       }
+      if (cartList) setCustomerCarts(cartList);
     } catch(e) { console.error("Load error:", e); }
     setLoading(false);
   }, []);
@@ -598,14 +609,46 @@ export default function App() {
 
   // ── Cart helpers ──
   const cartCount = cart.reduce((s,i)=>s+i.qty,0);
+  const persistCart = async (newCart) => {
+    if (!user) return;
+    const customer = customers.find(c=>c.id===user.id)||user;
+    const payload = {
+      customer_id: user.id,
+      customer_name: customer.company || user.name || user.email,
+      customer_email: user.email,
+      customer_type: user.customer_type || "standard",
+      items: JSON.stringify(newCart),
+      item_count: newCart.reduce((s,i)=>s+i.qty,0),
+      subtotal: newCart.reduce((s,i)=>s+i.price*i.qty,0),
+      updated_at: new Date().toISOString(),
+      status: newCart.length > 0 ? "active" : "cleared"
+    };
+    await supabase.from("customer_carts").upsert(payload, {onConflict:"customer_id"}).catch(()=>{});
+    if(user.role==="admin") return;
+    setCustomerCarts(prev=>{
+      const idx=prev.findIndex(c=>c.customer_id===user.id);
+      if(idx>=0){ const n=[...prev]; n[idx]={...n[idx],...payload}; return n; }
+      return [...prev,payload];
+    });
+  };
+
   const addToCart = (product, qty) => {
     setCart(prev=>{
       const ex = prev.find(i=>i.pid===product.id);
-      if (ex) return prev.map(i=>i.pid===product.id?{...i,qty:i.qty+qty}:i);
-      return [...prev,{pid:product.id,name:product.name,barcode:product.barcode,sku:product.sku,price:applyDiscount(product.wholesale_price,user.discount_pct||0),image:"📱",qty,min:product.min_order||1}];
+      const newCart = ex
+        ? prev.map(i=>i.pid===product.id?{...i,qty:i.qty+qty}:i)
+        : [...prev,{pid:product.id,name:product.name,barcode:product.barcode,sku:product.sku,price:applyDiscount(product.wholesale_price,user.discount_pct||0),image:"📱",qty,min:product.min_order||1}];
+      persistCart(newCart);
+      return newCart;
     });
   };
-  const updateQty = (pid,qty)=>{ if(qty<=0) setCart(p=>p.filter(i=>i.pid!==pid)); else setCart(p=>p.map(i=>i.pid===pid?{...i,qty}:i)); };
+  const updateQty = (pid,qty)=>{
+    setCart(prev=>{
+      const newCart = qty<=0 ? prev.filter(i=>i.pid!==pid) : prev.map(i=>i.pid===pid?{...i,qty}:i);
+      persistCart(newCart);
+      return newCart;
+    });
+  };
   const cartSubtotal = cart.reduce((s,i)=>s+i.price*i.qty,0);
   const cartTax = Math.round(cartSubtotal*settings.tax_rate/100);
   const cartTotal = cartSubtotal + cartTax;
@@ -636,6 +679,9 @@ export default function App() {
     const o = { ...orderData, items };
     setOrders(prev=>[o,...prev]);
     setCart([]); setShowCart(false);
+    // Mark cart as converted in Supabase
+    await supabase.from("customer_carts").upsert({customer_id:user.id,items:"[]",item_count:0,subtotal:0,status:"converted",updated_at:new Date().toISOString()},{onConflict:"customer_id"}).catch(()=>{});
+    setCustomerCarts(prev=>prev.map(c=>c.customer_id===user.id?{...c,items:"[]",item_count:0,status:"converted"}:c));
     setModal({type:"orderSuccess",data:o});
   };
 
@@ -652,6 +698,7 @@ export default function App() {
     ]},
     {section:"Sales", items:[
       {id:"orders",icon:"🧾",label:"Invoices"},
+      {id:"carts",icon:"🛒",label:"Customer Carts"},
       {id:"clearance",icon:"🔥",label:"Clearance"},
     ]},
     {section:"Accounts", items:[
@@ -739,6 +786,7 @@ export default function App() {
             {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} showToast={showToast}/>}
+            {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
             {page==="activitylog" && <ActivityLogPage activityLog={activityLog} setActivityLog={setActivityLog}/>}
             {page==="settings" && <SettingsPage settings={settings} setSettings={setSettings} showToast={showToast}/>}
@@ -1082,6 +1130,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     const headers = parseCSVLine(lines[0]).map(h=>h.replace(/"/g,"").trim());
     const imported = [];
     let lastError = "";
+    const skipped = [];
     const supplierCache = {};
     for (const line of lines.slice(1)) {
       if (!line.trim()) continue;
@@ -1127,18 +1176,29 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
         }
         if (supp) prod.supplier_id = supp.id;
       }
+      // Duplicate check before insert
+      const dupName = products.find(p=>p.name?.toLowerCase()===prod.name?.toLowerCase());
+      const dupBarcode = prod.barcode && products.find(p=>p.barcode&&p.barcode===prod.barcode);
+      if(dupName||dupBarcode) {
+        skipped.push(prod.name + (dupBarcode&&!dupName?` (barcode ${prod.barcode} duplicate)`:""));
+        continue;
+      }
       const {data, error} = await supabase.from("products").insert(prod).select().single();
       if (data) {
         imported.push(data);
-        // Log the import
         await supabase.from("activity_log").insert({action:"product_added",details:`Imported: ${prod.name}`,entity_type:"product",entity_id:String(data.id||""),user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
       }
       else if (error) { lastError = error.message; console.error("Import error:", prod.name, error.message); }
     }
     if (imported.length > 0) {
       setProducts(p=>[...imported,...p]);
-      showToast(`${imported.length} products imported`);
+      const msg = skipped.length>0
+        ? `${imported.length} imported, ${skipped.length} skipped (duplicates)`
+        : `${imported.length} products imported`;
+      showToast(msg);
       setShowImport(false);
+    } else if (skipped.length > 0) {
+      showToast(`All ${skipped.length} products skipped — already exist (duplicate name or barcode)`, "err");
     } else {
       showToast("Import failed: " + (lastError||"Unknown error"), "err");
     }
@@ -1259,13 +1319,18 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     setProducts(p=>p.map(x=>x.id===editing.id?{...x,...data}:x));
     showToast("Product updated");
   } else {
+    // Duplicate check
+    const dupName = products.find(p=>p.active&&p.name?.toLowerCase()===data.name?.toLowerCase());
+    const dupBarcode = data.barcode&&products.find(p=>p.active&&p.barcode&&p.barcode===data.barcode);
+    if(dupName){ showToast(`A product named "${data.name}" already exists`,"err"); return; }
+    if(dupBarcode){ showToast(`Barcode ${data.barcode} is already used by "${dupBarcode.name}"`,"err"); return; }
     const prod={...data,active:true,created_at:new Date().toISOString()};
     const {data:saved} = await supabase.from("products").insert(prod).select().single();
     if(saved){
       await supabase.from("activity_log").insert({action:"product_added",details:`Added: ${data.name}`,entity_type:"product",entity_id:saved.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
       setProducts(p=>[saved,...p]);
+      showToast("Product added");
     }
-    showToast("Product added");
   }
   setShowModal(false);
 }} onClose={()=>setShowModal(false)}/>}
@@ -2028,14 +2093,29 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
     const refundItems = Object.values(selected);
     if (!refundItems.length) { showToast("Select at least one item to refund","err"); return; }
     setProcessing(true);
-    const refundTotal = refundItems.reduce((s,i) => s + i.qty * i.unit_price, 0);
-    // Record refund in activity log
-    await supabase.from("activity_log").insert({
-      action:"refund_processed",
-      details:`Refund of ${refundItems.length} item(s) totaling ${fmt(refundTotal)} on order ${order.id}`,
-      entity_type:"order", entity_id:String(order.id),
-      user_name:"Admin", timestamp:new Date().toISOString()
-    }).catch(()=>{});
+
+    // Calculate refund amount (partial qty aware)
+    const refundSubtotal = refundItems.reduce((s,i) => s + i.qty * i.unit_price, 0);
+    const taxRate = order.tax_rate || 0;
+    const refundTax = Math.round(refundSubtotal * taxRate / 100);
+    const refundTotal = refundSubtotal + refundTax;
+
+    // Previously refunded amount (so we don't double-count)
+    const alreadyRefunded = order.refunded_total || 0;
+    const newRefundedTotal = alreadyRefunded + refundTotal;
+
+    // Determine new status: fully refunded if refunded_total >= original total
+    const allItemsReturned = (order.items||[]).every(oi => {
+      const ri = refundItems.find(r=>r.product_id===oi.product_id);
+      return ri && ri.qty >= oi.qty;
+    });
+    const newStatus = allItemsReturned ? "refunded" : "partial_refund";
+
+    // New totals after refund (for analytics exclusion)
+    const newTotal = Math.max(0, (order.total||0) - refundTotal);
+    const newSubtotal = Math.max(0, (order.subtotal||0) - refundSubtotal);
+    const newTaxAmount = Math.max(0, (order.tax_amount||0) - refundTax);
+
     // Return items to stock
     for (const item of refundItems) {
       const prod = products.find(p=>p.id===item.product_id);
@@ -2045,13 +2125,31 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
         setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:newStock}:p));
       }
     }
-    // Update order status to refunded (partial or full)
-    const allRefunded = refundItems.length === (order.items||[]).length;
-    const newStatus = allRefunded ? "refunded" : "partial_refund";
-    await supabase.from("orders").update({status:newStatus}).eq("id",order.id);
-    setOrders(prev=>prev.map(o=>o.id===order.id?{...o,status:newStatus}:o));
+
+    // Update order with new status + reduced totals + refunded_total tracking
+    await supabase.from("orders").update({
+      status: newStatus,
+      total: newTotal,
+      subtotal: newSubtotal,
+      tax_amount: newTaxAmount,
+      refunded_total: newRefundedTotal
+    }).eq("id", order.id);
+
+    setOrders(prev=>prev.map(o=>o.id===order.id?{
+      ...o, status:newStatus, total:newTotal,
+      subtotal:newSubtotal, tax_amount:newTaxAmount, refunded_total:newRefundedTotal
+    }:o));
+
+    // Log
+    await supabase.from("activity_log").insert({
+      action:"refund_processed",
+      details:`Refund of ${refundItems.length} item(s) totaling ${fmt(refundTotal)} on order ${order.id}. Order total reduced to ${fmt(newTotal)}.`,
+      entity_type:"order", entity_id:String(order.id),
+      user_name:"Admin", timestamp:new Date().toISOString()
+    }).catch(()=>{});
+
     setProcessing(false);
-    showToast(`Refund processed — ${refundItems.length} item(s) returned to stock`);
+    showToast(`Refund processed — ${fmt(refundTotal)} deducted, ${refundItems.length} item(s) returned to stock`);
     onClose();
   };
 
@@ -2700,6 +2798,11 @@ function POFormPage({ po, suppliers, products, setProducts, settings, showToast,
             active:false, // not active until received
             created_at:new Date().toISOString()
           };
+          // Duplicate check
+          const dupName2 = products.find(p=>p.name?.toLowerCase()===prod.name?.toLowerCase());
+          const dupBarcode2 = prod.barcode&&products.find(p=>p.barcode&&p.barcode===prod.barcode);
+          if(dupName2){ alert(`A product named "${prod.name}" already exists. Use the search bar to add it to the PO instead.`); return; }
+          if(dupBarcode2){ alert(`Barcode ${prod.barcode} is already used by "${dupBarcode2.name}". Use the search bar to add it to the PO instead.`); return; }
           const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
           if(error||!saved){ alert("Failed to save product: "+(error?.message||"unknown error")); return; }
           setProducts(prev=>[saved,...prev]);
@@ -3045,6 +3148,200 @@ function IncomingStockPage({ purchaseOrders }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── CUSTOMER CARTS PAGE ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders }) {
+  const [filter, setFilter] = useState("active");
+  const [selected, setSelected] = useState(null);
+
+  // Enrich carts with customer data and parse items
+  const enriched = customerCarts.map(c => {
+    const cust = customers.find(x=>x.id===c.customer_id);
+    const items = (() => { try { return JSON.parse(c.items||"[]"); } catch { return []; } })();
+    const lastOrder = orders.filter(o=>o.customer_id===c.customer_id).sort((a,b)=>b.date?.localeCompare(a.date||""))[0];
+    const updatedAt = c.updated_at ? new Date(c.updated_at) : null;
+    const minutesAgo = updatedAt ? Math.floor((Date.now()-updatedAt)/60000) : null;
+    const hoursAgo = minutesAgo !== null ? Math.floor(minutesAgo/60) : null;
+    const isAbandoned = hoursAgo !== null && hoursAgo >= 2 && c.status === "active" && items.length > 0;
+    return { ...c, items, cust, lastOrder, minutesAgo, hoursAgo, isAbandoned };
+  });
+
+  const filtered = enriched.filter(c => {
+    if (filter === "active") return c.status === "active" && c.items.length > 0;
+    if (filter === "abandoned") return c.isAbandoned;
+    if (filter === "converted") return c.status === "converted";
+    return true;
+  });
+
+  const totalActiveCarts = enriched.filter(c=>c.status==="active"&&c.items.length>0).length;
+  const totalAbandoned = enriched.filter(c=>c.isAbandoned).length;
+  const totalActiveValue = enriched.filter(c=>c.status==="active"&&c.items.length>0).reduce((s,c)=>s+(c.subtotal||0),0);
+
+  const timeAgo = (c) => {
+    if (c.minutesAgo === null) return "—";
+    if (c.minutesAgo < 1) return "just now";
+    if (c.minutesAgo < 60) return `${c.minutesAgo}m ago`;
+    if (c.hoursAgo < 24) return `${c.hoursAgo}h ago`;
+    return `${Math.floor(c.hoursAgo/24)}d ago`;
+  };
+
+  return (
+    <div>
+      {/* Summary stats */}
+      <div className="stats-grid" style={{marginBottom:20}}>
+        <div className="stat c1">
+          <div className="stat-label">Active Carts</div>
+          <div className="stat-val">{totalActiveCarts}</div>
+          <div className="stat-sub">customers browsing now</div>
+        </div>
+        <div className="stat c3">
+          <div className="stat-label">Abandoned Carts</div>
+          <div className="stat-val">{totalAbandoned}</div>
+          <div className="stat-sub">inactive 2+ hours</div>
+        </div>
+        <div className="stat c2">
+          <div className="stat-label">Active Cart Value</div>
+          <div className="stat-val">{fmt(totalActiveValue)}</div>
+          <div className="stat-sub">potential revenue</div>
+        </div>
+      </div>
+
+      {/* Filter tabs */}
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+        {[["active","🟢 Active Carts"],["abandoned","⚠️ Abandoned"],["converted","✓ Converted"],["all","All"]].map(([v,l])=>(
+          <button key={v} className={`btn btn-sm ${filter===v?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(v)}>{l}</button>
+        ))}
+        <div style={{marginLeft:"auto",fontSize:12,color:"var(--text3)",alignSelf:"center"}}>
+          Updates in real-time as customers add items
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:selected?"1fr 380px":"1fr",gap:16}}>
+        {/* Cart list */}
+        <div className="card">
+          <div className="tbl-wrap">
+            <table>
+              <thead><tr>
+                <th>Customer</th>
+                <th>Type</th>
+                <th style={{textAlign:"center"}}>Items</th>
+                <th style={{textAlign:"right"}}>Cart Value</th>
+                <th>Last Activity</th>
+                <th>Status</th>
+                <th></th>
+              </tr></thead>
+              <tbody>
+                {filtered.length===0&&(
+                  <tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:32}}>
+                    No {filter==="active"?"active":filter==="abandoned"?"abandoned":filter} carts found.
+                  </td></tr>
+                )}
+                {filtered.map((c,i)=>(
+                  <tr key={i} style={{cursor:"pointer",background:selected?.customer_id===c.customer_id?"var(--bg3)":""}}
+                    onClick={()=>setSelected(selected?.customer_id===c.customer_id?null:c)}>
+                    <td>
+                      <div style={{fontWeight:600,fontSize:13}}>{c.customer_name||c.customer_email||"Unknown"}</div>
+                      <div style={{fontSize:11,color:"var(--text3)"}}>{c.customer_email}</div>
+                    </td>
+                    <td>
+                      <span className={`badge ${c.customer_type==="consignment"?"bo":"bb"}`} style={{fontSize:10}}>
+                        {c.customer_type||"standard"}
+                      </span>
+                    </td>
+                    <td style={{textAlign:"center",fontWeight:700}}>{c.items.length}</td>
+                    <td style={{textAlign:"right",fontWeight:700,color:"var(--accent)"}}>
+                      {c.customer_type==="consignment"?"—":fmt(c.subtotal||0)}
+                    </td>
+                    <td style={{fontSize:12,color:c.isAbandoned?"var(--warn)":"var(--text2)"}}>
+                      {c.isAbandoned?"⚠️ ":""}{timeAgo(c)}
+                    </td>
+                    <td>
+                      {c.status==="converted"
+                        ? <span className="badge bg" style={{fontSize:10}}>✓ Ordered</span>
+                        : c.isAbandoned
+                          ? <span className="badge" style={{background:"rgba(255,170,0,.15)",color:"var(--warn)",fontSize:10}}>Abandoned</span>
+                          : <span className="badge" style={{background:"rgba(34,197,94,.15)",color:"var(--success)",fontSize:10}}>● Active</span>
+                      }
+                    </td>
+                    <td>
+                      <button className="btn btn-ghost btn-xs" onClick={e=>{e.stopPropagation();setSelected(selected?.customer_id===c.customer_id?null:c);}}>
+                        {selected?.customer_id===c.customer_id?"Hide":"View"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{padding:"10px 16px",fontSize:12,color:"var(--text3)",borderTop:"1px solid var(--border)"}}>
+            {filtered.length} cart{filtered.length!==1?"s":""}
+          </div>
+        </div>
+
+        {/* Cart detail panel */}
+        {selected&&(
+          <div className="card" style={{alignSelf:"start",position:"sticky",top:16}}>
+            <div className="card-header">
+              <div>
+                <h3 style={{margin:0}}>{selected.customer_name}</h3>
+                <div style={{fontSize:11,color:"var(--text3)"}}>{selected.customer_email}</div>
+              </div>
+              <button className="xbtn" onClick={()=>setSelected(null)}>✕</button>
+            </div>
+            <div className="card-body" style={{padding:0}}>
+              {/* Customer info */}
+              <div style={{padding:"12px 16px",background:"var(--bg3)",borderBottom:"1px solid var(--border)",display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:12}}>
+                <div><span style={{color:"var(--text3)"}}>Type: </span><strong>{selected.customer_type||"standard"}</strong></div>
+                <div><span style={{color:"var(--text3)"}}>Last order: </span><strong>{selected.lastOrder?.date||"Never"}</strong></div>
+                <div><span style={{color:"var(--text3)"}}>Updated: </span><strong>{timeAgo(selected)}</strong></div>
+                <div><span style={{color:"var(--text3)"}}>Status: </span>
+                  <strong style={{color:selected.isAbandoned?"var(--warn)":selected.status==="converted"?"var(--success)":"var(--accent)"}}>
+                    {selected.status==="converted"?"Converted":selected.isAbandoned?"Abandoned":"Active"}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Cart items */}
+              {selected.items.length===0
+                ? <div style={{padding:24,textAlign:"center",color:"var(--text3)"}}>Cart is empty</div>
+                : <>
+                  {selected.items.map((item,i)=>(
+                    <div key={i} style={{padding:"10px 16px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
+                        <div style={{fontSize:11,color:"var(--text3)"}}>Barcode: {item.barcode||"—"} · Min: {item.min}</div>
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        <div style={{fontSize:13,fontWeight:700}}>×{item.qty}</div>
+                        {selected.customer_type!=="consignment"&&<div style={{fontSize:11,color:"var(--accent)"}}>{fmt(item.price*item.qty)}</div>}
+                      </div>
+                    </div>
+                  ))}
+                  {selected.customer_type!=="consignment"&&(
+                    <div style={{padding:"12px 16px",display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:14,borderTop:"2px solid var(--border)"}}>
+                      <span>Subtotal</span>
+                      <span style={{color:"var(--accent)"}}>{fmt(selected.subtotal||0)}</span>
+                    </div>
+                  )}
+                </>
+              }
+
+              {/* Abandoned alert */}
+              {selected.isAbandoned&&(
+                <div style={{margin:12,padding:10,background:"rgba(255,170,0,.12)",borderRadius:8,fontSize:12,color:"var(--warn)",border:"1px solid rgba(255,170,0,.3)"}}>
+                  ⚠️ This cart has been inactive for {selected.hoursAgo} hour{selected.hoursAgo!==1?"s":""}. Consider reaching out to {selected.customer_name}.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3767,21 +4064,26 @@ function CartModal({ cart, updateQty, subtotal, tax, total, taxRate, user, onClo
               <div style={{fontSize:24,width:36,textAlign:"center"}}>📱</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:12,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
-                <div style={{fontSize:11,color:"var(--text2)"}}>{fmt(item.price)} each</div>
+                {!isConsignment&&<div style={{fontSize:11,color:"var(--text2)"}}>{fmt(item.price)} each</div>}
               </div>
               <div className="qty-ctrl">
                 <button className="qbtn" onClick={()=>updateQty(item.pid,item.qty-1)}>−</button>
                 <span style={{fontSize:13,fontWeight:600,minWidth:24,textAlign:"center"}}>{item.qty}</span>
                 <button className="qbtn" onClick={()=>updateQty(item.pid,item.qty+1)}>+</button>
               </div>
-              <div style={{minWidth:72,textAlign:"right",fontWeight:600,fontSize:13}}>{fmt(item.price*item.qty)}</div>
+              {!isConsignment&&<div style={{minWidth:72,textAlign:"right",fontWeight:600,fontSize:13}}>{fmt(item.price*item.qty)}</div>}
             </div>
           ))}
           <div className="divider"/>
-          <div className="total-row"><span>Subtotal</span><span>{fmt(subtotal)}</span></div>
-          <div className="total-row"><span>GCT ({taxRate}%)</span><span>{fmt(tax)}</span></div>
-          <div className="total-row grand"><span>Total</span><span>{fmt(total)}</span></div>
-          {!meetsMin&&<div className="alert alert-warn mt-3">Minimum order value is {fmt(minVal)}. Add {fmt(minVal-subtotal)} more to checkout.</div>}
+          {isConsignment
+            ? <div className="alert alert-info" style={{marginBottom:8}}>Pricing will be confirmed by our team before your order is processed.</div>
+            : <>
+                <div className="total-row"><span>Subtotal</span><span>{fmt(subtotal)}</span></div>
+                <div className="total-row"><span>GCT ({taxRate}%)</span><span>{fmt(tax)}</span></div>
+                <div className="total-row grand"><span>Total</span><span>{fmt(total)}</span></div>
+                {!meetsMin&&<div className="alert alert-warn mt-3">Minimum order value is {fmt(minVal)}. Add {fmt(minVal-subtotal)} more to checkout.</div>}
+              </>
+          }
           <div className="divider"/>
           {!isConsignment&&<>
             <div className="form-group"><label>Order Type</label>
