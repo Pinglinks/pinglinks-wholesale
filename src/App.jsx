@@ -1769,10 +1769,21 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
     return true;
   });
 
-  const approve=(id,type)=>{ setCustomers(p=>p.map(c=>c.id===id?{...c,approved:true,customer_type:type||c.customer_type||"upfront"}:c)); showToast("Account approved"); };
-  const revoke=(id)=>{ setCustomers(p=>p.map(c=>c.id===id?{...c,approved:false}:c)); showToast("Access revoked"); };
+  const approve=async(id,type)=>{
+    const { error } = await supabase.from("profiles").update({approved:true,customer_type:type||"upfront"}).eq("id",id);
+    if(error){ showToast("Failed to approve","err"); return; }
+    setCustomers(p=>p.map(c=>c.id===id?{...c,approved:true,customer_type:type||c.customer_type||"upfront"}:c));
+    showToast("Account approved");
+  };
+  const revoke=async(id)=>{
+    const { error } = await supabase.from("profiles").update({approved:false}).eq("id",id);
+    if(error){ showToast("Failed to revoke","err"); return; }
+    setCustomers(p=>p.map(c=>c.id===id?{...c,approved:false}:c));
+    showToast("Access revoked");
+  };
 
-  const saveCustomer=(data)=>{
+  const saveCustomer=async(data)=>{
+    await supabase.from("profiles").update(data).eq("id",editing.id);
     setCustomers(p=>p.map(c=>c.id===editing.id?{...c,...data}:c));
     showToast("Customer updated"); setShowModal(false);
   };
