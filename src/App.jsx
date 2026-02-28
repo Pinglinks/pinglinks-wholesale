@@ -2265,10 +2265,15 @@ function StoresPage({ stores, setStores, showToast }) {
 
   const openAdd=()=>{ setEditing(null); setF({name:"",address:""}); setShow(true); };
   const openEdit=(s)=>{ setEditing(s); setF({name:s.name,address:s.address}); setShow(true); };
-  const save=()=>{
+  const save=async()=>{
     if(!f.name)return;
-    if(editing) setStores(p=>p.map(s=>s.id===editing.id?{...s,...f}:s));
-    else setStores(p=>[...p,{...f,id:`store${Date.now()}`}]);
+    if(editing){
+      await supabase.from("stores").update({name:f.name,address:f.address}).eq("id",editing.id);
+      setStores(p=>p.map(s=>s.id===editing.id?{...s,...f}:s));
+    } else {
+      const {data} = await supabase.from("stores").insert({name:f.name,address:f.address}).select().single();
+      if(data) setStores(p=>[...p,data]);
+    }
     showToast(editing?"Store updated":"Store added"); setShow(false);
   };
 
@@ -2287,7 +2292,7 @@ function StoresPage({ stores, setStores, showToast }) {
                 <td style={{fontSize:12,color:"var(--text2)"}}>{s.address}</td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-secondary btn-xs" onClick={()=>openEdit(s)}>Edit</button>
-                  <button className="btn btn-danger btn-xs" onClick={()=>{ if(window.confirm("Delete store?"))setStores(p=>p.filter(x=>x.id!==s.id)); }}>Del</button>
+                  <button className="btn btn-danger btn-xs" onClick={async()=>{ if(window.confirm("Delete store?")){await supabase.from("stores").delete().eq("id",s.id);setStores(p=>p.filter(x=>x.id!==s.id));} }}>Del</button>
                 </div></td>
               </tr>
             ))}</tbody>
