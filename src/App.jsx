@@ -85,7 +85,7 @@ const STYLES = `
 }
 html{font-size:14px}
 body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5}
-h1,h2,h3,h4{font-family:'Syne',sans-serif;line-height:1.2}
+h1,h2,h3,h4{font-family:'DM Sans',sans-serif;line-height:1.2;font-weight:700}
 a{color:var(--accent);text-decoration:none}
 button{font-family:inherit;cursor:pointer}
 
@@ -107,7 +107,7 @@ button{font-family:inherit;cursor:pointer}
 .avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff;flex-shrink:0}
 .main{margin-left:220px;flex:1;display:flex;flex-direction:column;min-height:100vh}
 .topbar{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--border);background:var(--bg2);position:sticky;top:0;z-index:50;flex-shrink:0}
-.topbar-title{font-family:'Syne',sans-serif;font-weight:700;font-size:17px}
+.topbar-title{font-family:'DM Sans',sans-serif;font-weight:700;font-size:17px}
 .content{padding:24px;flex:1}
 
 /* ── Buttons ── */
@@ -137,7 +137,7 @@ button{font-family:inherit;cursor:pointer}
 .stat.c3::before{background:var(--accent3)}.stat.c4::before{background:var(--accent4)}
 .stat.c5::before{background:var(--warn)}.stat.c6::before{background:var(--danger)}
 .stat-label{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text3);margin-bottom:6px}
-.stat-val{font-family:'Syne',sans-serif;font-size:24px;font-weight:800;line-height:1}
+.stat-val{font-family:'DM Sans',sans-serif;font-size:24px;font-weight:700;line-height:1}
 .stat-sub{font-size:11px;color:var(--text3);margin-top:4px}
 
 /* ── Tables ── */
@@ -301,6 +301,11 @@ code{font-family:'Courier New',monospace;font-size:11px;background:var(--bg3);pa
 const fmt = (n) => `J$${Number(n||0).toLocaleString()}`;
 const fmtNum = (n) => Number(n||0).toLocaleString();
 const today = () => new Date().toISOString().slice(0,10);
+const isNewArrival = (p) => {
+  if (!p.created_at) return false;
+  const days = (new Date() - new Date(p.created_at)) / (1000*60*60*24);
+  return days <= 30;
+};
 const genId = (prefix, arr) => `${prefix}-${new Date().getFullYear()}-${String((arr.length+1)).padStart(3,"0")}`;
 
 function applyDiscount(price, pct) { return Math.round(price * (1 - (pct||0)/100)); }
@@ -451,6 +456,19 @@ export default function App() {
   const [modal, setModal]       = useState(null);
   const [toast, setToast]       = useState(null);
   const [loading, setLoading]   = useState(true);
+  const [activityLog, setActivityLog] = useState([]);
+
+  const logActivity = async (action, details, entityType="", entityId="") => {
+    const entry = {
+      id: `act-${Date.now()}`,
+      action, details, entity_type: entityType, entity_id: entityId,
+      user_name: "Admin", timestamp: new Date().toISOString()
+    };
+    try {
+      await supabase.from("activity_log").insert(entry);
+    } catch(e) {}
+    setActivityLog(prev=>[entry,...prev].slice(0,500));
+  };
 
   // ── Toast ──
   const showToast = useCallback((msg, type="ok") => {
@@ -611,6 +629,7 @@ export default function App() {
     ]},
     {section:"Reports", items:[
       {id:"analytics",icon:"📈",label:"Analytics"},
+      {id:"activitylog",icon:"🕐",label:"Activity Log"},
     ]},
     {section:"System", items:[
       {id:"settings",icon:"⚙️",label:"Settings"},
@@ -627,7 +646,7 @@ export default function App() {
     {section:"Account", items:[{id:"account",icon:"👤",label:"Account"}]},
   ];
 
-  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders",account:"My Account" };
+  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders",account:"My Account" };
 
   return (
     <>
@@ -679,7 +698,7 @@ export default function App() {
           <div className="content">
             {page==="dashboard" && <DashboardPage products={products} orders={orders} customers={customers} transfers={transfers} settings={settings} setPage={setPage}/>}
             {page==="products" && <ProductsPage products={products} setProducts={setProducts} suppliers={suppliers} categories={DEMO_CATEGORIES} settings={settings} showToast={showToast}/>}
-            {page==="categories" && <CategoriesPage products={products} />}
+            {page==="categories" && <CategoriesPage products={products} extraCategories={settings.extra_categories?JSON.parse(settings.extra_categories):[]} setExtraCategories={(v)=>setSettings(p=>({...p,extra_categories:JSON.stringify(v)}))} showToast={showToast}/>}
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
             {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} settings={settings} showToast={showToast}/>}
@@ -687,6 +706,7 @@ export default function App() {
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} showToast={showToast}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
+            {page==="activitylog" && <ActivityLogPage activityLog={activityLog} setActivityLog={setActivityLog}/>}
             {page==="settings" && <SettingsPage settings={settings} setSettings={setSettings} showToast={showToast}/>}
             {page==="stores" && <StoresPage stores={stores} setStores={setStores} showToast={showToast}/>}
             {page==="catalog" && <CatalogPage products={products} user={user} addToCart={addToCart} cart={cart} settings={settings}/>}
@@ -1087,7 +1107,7 @@ function ProductsPage({ products, setProducts, suppliers, categories, settings, 
                     <td>
                       <div className="tbl-actions">
                         <button className="btn btn-secondary btn-xs" onClick={()=>{setEditing(p);setShowModal(true);}}>Edit</button>
-                        {!p.active?<button className="btn btn-ghost btn-xs" onClick={()=>restore(p.id)}>Restore</button>:<button className="btn btn-danger btn-xs" onClick={()=>{setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");}}>Archive</button>}
+                        {!p.active?<button className="btn btn-ghost btn-xs" onClick={()=>restore(p.id)}>Restore</button>:<button className="btn btn-warn btn-xs" onClick={async()=>{await supabase.from("products").update({active:false}).eq("id",p.id);await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");}}>Archive</button>}
                         <button className="btn btn-danger btn-xs" onClick={()=>hardDelete(p.id)}>Del</button>
                       </div>
                     </td>
@@ -1214,10 +1234,16 @@ function ImportModal({ onImport, onDownloadTemplate, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── CATEGORIES PAGE ─────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function CategoriesPage({ products }) {
+function CategoriesPage({ products, extraCategories, setExtraCategories, showToast }) {
+  const [newCat, setNewCat] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+
   const cats = useMemo(()=>{
     const map={};
+    // Include extra manually-added categories
+    (extraCategories||[]).forEach(name=>{ if(!map[name]) map[name]={name,count:0,totalStock:0,totalCost:0,totalRetail:0,manual:true}; });
     products.filter(p=>p.active).forEach(p=>{
+      if(!p.category) return;
       if(!map[p.category]) map[p.category]={name:p.category,count:0,totalStock:0,totalCost:0,totalRetail:0};
       map[p.category].count++;
       map[p.category].totalStock+=p.stock;
@@ -1225,9 +1251,27 @@ function CategoriesPage({ products }) {
       map[p.category].totalRetail+=p.retail_price*p.stock;
     });
     return Object.values(map).sort((a,b)=>b.count-a.count);
-  },[products]);
+  },[products, extraCategories]);
 
   const maxCount = Math.max(...cats.map(c=>c.count),1);
+
+  const addCategory = async () => {
+    if (!newCat.trim()) return;
+    if (cats.find(c=>c.name.toLowerCase()===newCat.trim().toLowerCase())) { showToast("Category already exists","err"); return; }
+    const updated = [...(extraCategories||[]), newCat.trim()];
+    // Save to Supabase settings as JSON
+    await supabase.from("site_settings").update({extra_categories: JSON.stringify(updated)}).eq("id",1);
+    setExtraCategories(updated);
+    setNewCat(""); setShowAdd(false);
+    showToast("Category added");
+  };
+
+  const deleteManualCat = async (name) => {
+    const updated = (extraCategories||[]).filter(c=>c!==name);
+    await supabase.from("site_settings").update({extra_categories: JSON.stringify(updated)}).eq("id",1);
+    setExtraCategories(updated);
+    showToast("Category removed");
+  };
 
   return (
     <div>
@@ -1237,13 +1281,23 @@ function CategoriesPage({ products }) {
         <div className="stat c3"><div className="stat-label">Total Units</div><div className="stat-val">{fmtNum(products.filter(p=>p.active).reduce((s,p)=>s+p.stock,0))}</div></div>
       </div>
       <div className="card">
-        <div className="card-header"><h3>Inventory by Category</h3></div>
+        <div className="card-header">
+          <h3>Inventory by Category</h3>
+          <button className="btn btn-primary btn-sm" onClick={()=>setShowAdd(true)}>+ Add Category</button>
+        </div>
+        {showAdd&&(
+          <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",display:"flex",gap:8,alignItems:"center"}}>
+            <input value={newCat} onChange={e=>setNewCat(e.target.value)} placeholder="Category name…" style={{maxWidth:280}} onKeyDown={e=>e.key==="Enter"&&addCategory()}/>
+            <button className="btn btn-primary btn-sm" onClick={addCategory}>Add</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setShowAdd(false)}>Cancel</button>
+          </div>
+        )}
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Category</th><th>Products</th><th>Distribution</th><th>Units in Stock</th><th>Inventory Cost</th><th>Retail Value</th></tr></thead>
+            <thead><tr><th>Category</th><th>Products</th><th>Distribution</th><th>Units in Stock</th><th>Inventory Cost</th><th>Retail Value</th><th></th></tr></thead>
             <tbody>{cats.map(c=>(
               <tr key={c.name}>
-                <td style={{fontWeight:600}}>{c.name}</td>
+                <td style={{fontWeight:600}}>{c.name}{c.manual&&c.count===0&&<span className="badge bgr" style={{marginLeft:6,fontSize:9}}>empty</span>}</td>
                 <td>{c.count}</td>
                 <td style={{width:200}}>
                   <div className="chart-bar-bg" style={{width:180}}>
@@ -1253,6 +1307,7 @@ function CategoriesPage({ products }) {
                 <td>{fmtNum(c.totalStock)}</td>
                 <td style={{color:"var(--text2)"}}>{fmt(c.totalCost)}</td>
                 <td style={{color:"var(--accent)"}}>{fmt(c.totalRetail)}</td>
+                <td>{c.manual&&c.count===0&&<button className="btn btn-danger btn-xs" onClick={()=>deleteManualCat(c.name)}>Remove</button>}</td>
               </tr>
             ))}</tbody>
           </table>
@@ -1759,6 +1814,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
   const [search,setSearch]=useState("");
   const [editing,setEditing]=useState(null);
   const [showModal,setShowModal]=useState(false);
+  const [showCreateModal,setShowCreateModal]=useState(false);
 
   const filtered=customers.filter(c=>{
     if(tab==="pending"&&c.approved)return false;
@@ -1769,17 +1825,66 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
     return true;
   });
 
+  const logAct = async(action,details,entity_type="",entity_id="") => {
+    await supabase.from("activity_log").insert({action,details,entity_type,entity_id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+  };
+
   const approve=async(id,type)=>{
+    const c = customers.find(x=>x.id===id);
     const { error } = await supabase.from("profiles").update({approved:true,customer_type:type||"upfront"}).eq("id",id);
     if(error){ showToast("Failed to approve","err"); return; }
-    setCustomers(p=>p.map(c=>c.id===id?{...c,approved:true,customer_type:type||c.customer_type||"upfront"}:c));
+    setCustomers(p=>p.map(x=>x.id===id?{...x,approved:true,customer_type:type||x.customer_type||"upfront"}:x));
+    await logAct("customer_approved",`Approved ${c?.company||c?.name} as ${type||"upfront"}`,"customer",id);
     showToast("Account approved");
   };
   const revoke=async(id)=>{
+    const c = customers.find(x=>x.id===id);
     const { error } = await supabase.from("profiles").update({approved:false}).eq("id",id);
     if(error){ showToast("Failed to revoke","err"); return; }
-    setCustomers(p=>p.map(c=>c.id===id?{...c,approved:false}:c));
+    setCustomers(p=>p.map(x=>x.id===id?{...x,approved:false}:x));
+    await logAct("customer_revoked",`Revoked access for ${c?.company||c?.name}`,"customer",id);
     showToast("Access revoked");
+  };
+
+  const deleteCustomer=async(id, email)=>{
+    if(!window.confirm(`Permanently delete this customer? They will be able to sign up again with the same email.`)) return;
+    // Delete from profiles first
+    await supabase.from("profiles").delete().eq("id",id);
+    // Delete from auth via admin API (uses service role - handled by edge function)
+    await fetch(`${SUPABASE_URL}/functions/v1/delete-user`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`},
+      body:JSON.stringify({user_id:id})
+    }).catch(()=>{});
+    setCustomers(p=>p.filter(c=>c.id!==id));
+    showToast("Customer deleted — they can sign up again");
+  };
+
+  const createCustomer=async(data)=>{
+    // Create auth user
+    const { data: authData, error } = await supabase.auth.admin?.createUser?.({
+      email: data.email, password: data.password, email_confirm: true,
+      user_metadata: { name: data.name, company: data.company, tax_id: data.tax_id, role: "buyer" }
+    });
+    // Fallback: use signUp
+    if (error || !authData) {
+      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+        email: data.email, password: data.password,
+        options: { data: { name: data.name, company: data.company, tax_id: data.tax_id, role: "buyer" } }
+      });
+      if (signUpErr) { showToast(signUpErr.message,"err"); return; }
+    }
+    // Update profile to approved immediately
+    await new Promise(r=>setTimeout(r,1000)); // wait for trigger
+    await supabase.from("profiles").update({
+      approved: true, customer_type: data.customer_type||"upfront",
+      discount_pct: data.discount_pct||0, min_order_value: data.min_order_value||0
+    }).eq("email", data.email);
+    // Reload customers
+    const { data: custs } = await supabase.from("profiles").select("*").eq("role","buyer").order("created_at",{ascending:false});
+    if (custs) setCustomers(custs);
+    setShowCreateModal(false);
+    showToast(`Account created for ${data.name} — share their login details`);
   };
 
   const saveCustomer=async(data)=>{
@@ -1799,6 +1904,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
       </div>
       <div className="filter-bar">
         <div className="search-wrap"><span className="search-icon">🔍</span><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search customers…"/></div>
+        <button className="btn btn-primary btn-sm" onClick={()=>setShowCreateModal(true)}>+ Create Account</button>
       </div>
       <div className="card">
         <div className="tbl-wrap">
@@ -1824,7 +1930,8 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
                         <button className="btn btn-purple btn-xs" onClick={()=>approve(c.id,"consignment")}>→ Consign</button>
                       </>
                     )}
-                    {c.approved&&<button className="btn btn-danger btn-xs" onClick={()=>revoke(c.id)}>Revoke</button>}
+                    {c.approved&&<button className="btn btn-warn btn-xs" onClick={()=>revoke(c.id)}>Revoke</button>}
+                    <button className="btn btn-danger btn-xs" onClick={()=>deleteCustomer(c.id, c.email)}>🗑 Delete</button>
                   </div></td>
                 </tr>
               );
@@ -1835,7 +1942,54 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
         </div>
       </div>
       {showModal&&editing&&<CustomerEditModal customer={editing} onSave={saveCustomer} onClose={()=>setShowModal(false)}/>}
+      {showCreateModal&&<CreateCustomerModal onSave={createCustomer} onClose={()=>setShowCreateModal(false)}/>}
     </>
+  );
+}
+
+function CreateCustomerModal({ onSave, onClose }) {
+  const [f,setF]=useState({name:"",company:"",email:"",password:"",tax_id:"",customer_type:"upfront",discount_pct:0,min_order_value:0});
+  const [busy,setBusy]=useState(false);
+  const genPwd=()=>{ const p=Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,6).toUpperCase()+"!1"; setF(x=>({...x,password:p})); };
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal modal-md">
+        <div className="modal-head"><h2>👤 Create Customer Account</h2><button className="xbtn" onClick={onClose}>✕</button></div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{marginBottom:14}}>Create an account on behalf of a customer. Share the email and password with them — they can change their password after logging in.</div>
+          <div className="form-row">
+            <div className="form-group"><label>Full Name</label><input value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))}/></div>
+            <div className="form-group"><label>Company Name</label><input value={f.company} onChange={e=>setF(p=>({...p,company:e.target.value}))}/></div>
+          </div>
+          <div className="form-row">
+            <div className="form-group"><label>Email</label><input type="email" value={f.email} onChange={e=>setF(p=>({...p,email:e.target.value}))}/></div>
+            <div className="form-group"><label>Business TRN</label><input value={f.tax_id} onChange={e=>setF(p=>({...p,tax_id:e.target.value}))}/></div>
+          </div>
+          <div className="form-group">
+            <label>Password</label>
+            <div style={{display:"flex",gap:8}}>
+              <input value={f.password} onChange={e=>setF(p=>({...p,password:e.target.value}))} style={{flex:1}}/>
+              <button className="btn btn-secondary btn-sm" onClick={genPwd}>Generate</button>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group"><label>Account Type</label>
+              <select value={f.customer_type} onChange={e=>setF(p=>({...p,customer_type:e.target.value}))}>
+                <option value="upfront">Upfront</option>
+                <option value="consignment">Consignment</option>
+              </select>
+            </div>
+            <div className="form-group"><label>Discount %</label><input type="number" min={0} max={100} value={f.discount_pct} onChange={e=>setF(p=>({...p,discount_pct:+e.target.value}))}/></div>
+          </div>
+          <div className="form-group"><label>Min Order Value (J$)</label><input type="number" min={0} value={f.min_order_value} onChange={e=>setF(p=>({...p,min_order_value:+e.target.value}))}/></div>
+          {f.password&&<div className="alert alert-ok" style={{fontSize:12}}>📋 Login details to share:<br/><strong>Email:</strong> {f.email}<br/><strong>Password:</strong> {f.password}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy||!f.name||!f.email||!f.password} onClick={async()=>{setBusy(true);await onSave(f);setBusy(false);}}>{busy?"Creating…":"Create Account"}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1884,6 +2038,66 @@ function CustomerEditModal({ customer, onSave, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── ANALYTICS PAGE ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── ACTIVITY LOG PAGE ────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function ActivityLogPage({ activityLog, setActivityLog }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all");
+
+  useEffect(()=>{
+    supabase.from("activity_log").select("*").order("timestamp",{ascending:false}).limit(500)
+      .then(({data})=>{ if(data) setLogs(data); setLoading(false); })
+      .catch(()=>setLoading(false));
+  },[]);
+
+  const actionColors = {
+    "product_added":"var(--success)","product_updated":"var(--accent)","product_archived":"var(--warn)",
+    "product_deleted":"var(--danger)","customer_approved":"var(--success)","customer_created":"var(--accent2)",
+    "customer_deleted":"var(--danger)","customer_revoked":"var(--warn)","order_placed":"var(--accent)",
+    "order_status":"var(--accent2)","stock_take":"var(--accent4)","transfer":"var(--accent3)",
+    "settings_updated":"var(--text3)"
+  };
+
+  const filtered = filter==="all" ? logs : logs.filter(l=>l.entity_type===filter);
+
+  return (
+    <div>
+      <div className="alert alert-info" style={{marginBottom:16}}>📋 Read-only activity log — all actions are recorded and cannot be edited.</div>
+      <div className="filter-bar" style={{marginBottom:16}}>
+        {["all","product","customer","order","transfer","stock_take"].map(f=>(
+          <button key={f} className={`btn btn-sm ${filter===f?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(f)}>
+            {f==="all"?"All":f.charAt(0).toUpperCase()+f.slice(1).replace("_"," ")}
+          </button>
+        ))}
+      </div>
+      <div className="card">
+        <div className="card-header"><h3>🕐 Activity Log ({filtered.length} entries)</h3></div>
+        {loading?<div style={{padding:32,textAlign:"center",color:"var(--text3)"}}>Loading…</div>:(
+        <div className="tbl-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Action</th><th>Details</th><th>User</th><th>Entity</th></tr></thead>
+            <tbody>
+              {filtered.length===0&&<tr><td colSpan={5} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No activity recorded yet.</td></tr>}
+              {filtered.map(l=>(
+                <tr key={l.id}>
+                  <td style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>{new Date(l.timestamp).toLocaleString()}</td>
+                  <td><span className="badge" style={{background:`${actionColors[l.action]||"var(--accent)"}22`,color:actionColors[l.action]||"var(--accent)",fontSize:10}}>{l.action?.replace(/_/g," ")}</span></td>
+                  <td style={{fontSize:12,maxWidth:400}}>{l.details}</td>
+                  <td style={{fontSize:12,fontWeight:500}}>{l.user_name||"System"}</td>
+                  <td style={{fontSize:11,color:"var(--text3)"}}>{l.entity_type}{l.entity_id?` · ${l.entity_id.slice(0,8)}…`:""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsPage({ products, orders, customers, transfers }) {
   const activeProducts=products.filter(p=>p.active);
   const paidOrders=orders.filter(o=>o.status!=="cancelled");
