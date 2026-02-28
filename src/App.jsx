@@ -3,7 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 
 // ─── SUPABASE CONFIG ───────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://hzykmhxsilbfkgzjkqoy.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6eWttaHhzaWxiZmtnemprcW95Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxNjI4NDQsImV4cCI6MjA4NzczODg0NH0.jQ_Pey7cYwe6ZyqiMLMvnCj_FPdEuN9OXRAEqeFbYQQ";
+const SUPABASE_ANON_KEY = "- [ ] Consignment customers see when looking at products “You are viewing as a consignment customer. Contact us for pricing and to place orders.” Instead of them needing to contact us, I would still like them to be able to add to cart and check out, just without any prices attached. 
+- [ ] Please double check to make sure any checking out whatsoever, whether consignment or upfront buyers, deducts the QTY’s checked out from inventory. Maybe set it up so admin confirms the QTY’s can / have been shipped before it deducts. Sometimes we are unable to physically find a product so we want to be able to have that inventory remain in stock if we can ship it to the customer. 
+- [ ] Allow admin to process refunds whether for upfront buyers or consignment. This allows us to send back the inventory into stock if the customer sends the item(s) back to us. This can be done on looking at the customers invoice in admin, and only selecting the item(s) being returned to refund. Meaning if a customer originally checked out 20 different items, we should be able to only refund / send back to stock one of the items. 
+- [ ] The product page is still blank when admin presses “products on the left pane” ";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -594,17 +597,12 @@ export default function App() {
     if (orderErr) { showToast("Failed to place order","err"); return; }
     const items = cart.map(i => ({
       order_id: id, product_id: i.pid, name: i.name,
-      qty: i.qty, unit_price: i.price, barcode: i.barcode||"", sku: i.sku
+      qty: i.qty, unit_price: i.price, barcode: i.barcode||"", sku: i.sku||""
     }));
     await supabase.from("order_items").insert(items);
-    // Deduct stock
-    for (const i of cart) {
-      const p = products.find(x=>x.id===i.pid);
-      if (p) await supabase.from("products").update({stock: Math.max(0, p.stock - i.qty)}).eq("id", p.id);
-    }
+    // NOTE: Stock is NOT deducted here — admin deducts when marking as "shipped"
     const o = { ...orderData, items };
     setOrders(prev=>[o,...prev]);
-    setProducts(prev=>prev.map(p=>{ const ci=cart.find(i=>i.pid===p.id); return ci?{...p,stock:Math.max(0,p.stock-ci.qty)}:p; }));
     setCart([]); setShowCart(false);
     setModal({type:"orderSuccess",data:o});
   };
@@ -702,7 +700,7 @@ export default function App() {
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
             {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} settings={settings} showToast={showToast}/>}
-            {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal}/>}
+            {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} showToast={showToast}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
@@ -964,7 +962,7 @@ function DashboardPage({ products, orders, customers, transfers, settings, setPa
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── PRODUCTS PAGE ────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function ProductsPage({ products, setProducts, suppliers, categories, settings, showToast }) {
+function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, transfers, settings, showToast, isAdmin }) {
   const [search,setSearch]=useState("");
   const [filterCat,setFilterCat]=useState("All");
   const [filterSupplier,setFilterSupplier]=useState("All");
@@ -1954,11 +1952,115 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── INVOICES PAGE ────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function InvoicesPage({ orders, setOrders, customers, settings, showToast, setModal }) {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── REFUND MODAL ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function RefundModal({ order, onClose, showToast, setOrders, setProducts, products }) {
+  const [selected, setSelected] = useState({});
+  const [processing, setProcessing] = useState(false);
+
+  const toggle = (item) => {
+    setSelected(p => {
+      const key = item.product_id;
+      if (p[key]) { const n={...p}; delete n[key]; return n; }
+      return {...p, [key]: {qty: item.qty, unit_price: item.unit_price, name: item.name, product_id: item.product_id}};
+    });
+  };
+
+  const updateQty = (productId, qty) => {
+    setSelected(p => ({...p, [productId]: {...p[productId], qty: parseInt(qty)||1}}));
+  };
+
+  const processRefund = async () => {
+    const refundItems = Object.values(selected);
+    if (!refundItems.length) { showToast("Select at least one item to refund","err"); return; }
+    setProcessing(true);
+    const refundTotal = refundItems.reduce((s,i) => s + i.qty * i.unit_price, 0);
+    // Record refund in activity log
+    await supabase.from("activity_log").insert({
+      action:"refund_processed",
+      details:`Refund of ${refundItems.length} item(s) totaling ${fmt(refundTotal)} on order ${order.id}`,
+      entity_type:"order", entity_id:String(order.id),
+      user_name:"Admin", timestamp:new Date().toISOString()
+    }).catch(()=>{});
+    // Return items to stock
+    for (const item of refundItems) {
+      const prod = products.find(p=>p.id===item.product_id);
+      if (prod) {
+        const newStock = prod.stock + item.qty;
+        await supabase.from("products").update({stock:newStock}).eq("id",item.product_id);
+        setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:newStock}:p));
+      }
+    }
+    // Update order status to refunded (partial or full)
+    const allRefunded = refundItems.length === (order.items||[]).length;
+    const newStatus = allRefunded ? "refunded" : "partial_refund";
+    await supabase.from("orders").update({status:newStatus}).eq("id",order.id);
+    setOrders(prev=>prev.map(o=>o.id===order.id?{...o,status:newStatus}:o));
+    setProcessing(false);
+    showToast(`Refund processed — ${refundItems.length} item(s) returned to stock`);
+    onClose();
+  };
+
+  const selectedTotal = Object.values(selected).reduce((s,i)=>s+i.qty*i.unit_price,0);
+
+  return (
+    <div className="overlay">
+      <div className="modal modal-md">
+        <div className="modal-head">
+          <div>
+            <h2>↩️ Process Refund</h2>
+            <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>Order {order.id} · {order.customer_name}</div>
+          </div>
+          <button className="xbtn" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-warn" style={{marginBottom:14}}>Select the items being returned. Stock will be added back for selected items.</div>
+          {(order.items||[]).map((item,i)=>{
+            const sel = selected[item.product_id];
+            return (
+              <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
+                <input type="checkbox" checked={!!sel} onChange={()=>toggle(item)} style={{width:16,height:16,flexShrink:0}}/>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:500}}>{item.name}</div>
+                  <div style={{fontSize:11,color:"var(--text2)"}}>Ordered: {item.qty} × {fmt(item.unit_price)} = {fmt(item.qty*item.unit_price)}</div>
+                </div>
+                {sel&&<div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <label style={{fontSize:11,color:"var(--text3)"}}>Return qty:</label>
+                  <input type="number" min={1} max={item.qty} value={sel.qty}
+                    onChange={e=>updateQty(item.product_id, Math.min(item.qty, Math.max(1,+e.target.value)))}
+                    style={{width:60,textAlign:"center",padding:"3px 6px",border:"1px solid var(--border)",borderRadius:6}}/>
+                </div>}
+              </div>
+            );
+          })}
+          {Object.keys(selected).length>0&&(
+            <div style={{marginTop:14,padding:"10px 14px",background:"var(--bg3)",borderRadius:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:600}}>
+                <span>{Object.keys(selected).length} item(s) selected for refund</span>
+                <span style={{color:"var(--danger)"}}>−{fmt(selectedTotal)}</span>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-danger" onClick={processRefund} disabled={processing||!Object.keys(selected).length}>
+            {processing?"Processing…":"Process Refund & Return to Stock"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InvoicesPage({ orders, setOrders, customers, settings, showToast, setModal, setProducts, products }) {
   const [search,setSearch]=useState("");
   const [filterStatus,setFilterStatus]=useState("all");
   const [filterDate,setFilterDate]=useState("");
   const [showEmailModal,setShowEmailModal]=useState(null);
+  const [showRefund,setShowRefund]=useState(null);
 
   const filtered=useMemo(()=>orders.filter(o=>{
     if(filterStatus!=="all"&&o.status!==filterStatus)return false;
@@ -1971,7 +2073,24 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
   const {sorted,key,dir,toggle}=useSort(filtered,"date");
   const pg=usePagination(sorted,20);
 
-  const updateStatus=(id,status)=>{ setOrders(p=>p.map(o=>o.id===id?{...o,status}:o)); showToast("Status updated"); };
+  const updateStatus=async(id,status)=>{
+    const order = orders.find(o=>o.id===id);
+    // Deduct stock when admin marks as shipped (only once)
+    if(status==="shipped" && order?.status!=="shipped" && order?.status!=="delivered") {
+      for(const item of (order?.items||[])) {
+        const {data:prod} = await supabase.from("products").select("stock").eq("id",item.product_id).single();
+        if(prod) {
+          const newStock = Math.max(0, prod.stock - item.qty);
+          await supabase.from("products").update({stock:newStock}).eq("id",item.product_id);
+          setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:newStock}:p));
+        }
+      }
+      showToast("Order shipped — inventory deducted");
+    }
+    await supabase.from("orders").update({status}).eq("id",id);
+    setOrders(p=>p.map(o=>o.id===id?{...o,status}:o));
+    if(status!=="shipped") showToast("Status updated");
+  };
 
   const exportCSV=()=>{
     const rows=[["Invoice","Customer","Date","Status","Payment","Subtotal","Tax","Total"],...filtered.map(o=>[o.id,o.customer_name,o.date,o.status,o.payment_method||"—",o.subtotal,o.tax_amount,o.total])];
@@ -1987,7 +2106,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
         </div>
         <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={{width:"auto"}}>
           <option value="all">All Statuses</option>
-          {["pending","processing","shipped","paid","delivered","cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
+          {["pending","processing","shipped","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
         </select>
         <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
         <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
@@ -2017,13 +2136,14 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
                 <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
                 <td>
                   <select value={o.status} onChange={e=>updateStatus(o.id,e.target.value)} style={{padding:"3px 6px",fontSize:11,width:"auto",background:"var(--bg3)"}}>
-                    {["pending","processing","shipped","paid","delivered","cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
+                    {["pending","processing","shipped","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
                   </select>
                 </td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>View</button>
                   <button className="btn btn-ghost btn-xs" onClick={()=>{ const c=customers.find(x=>x.id===o.customer_id); printInvoice(o,c,settings); }}>Print</button>
                   <button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>
+                  {(o.status==="shipped"||o.status==="delivered"||o.status==="paid")&&<button className="btn btn-warn btn-xs" onClick={()=>setShowRefund(o)}>↩ Refund</button>}
                 </div></td>
               </tr>
             ))}
@@ -2038,6 +2158,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
       </div>
 
       {showEmailModal&&<EmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
+      {showRefund&&<RefundModal order={showRefund} onClose={()=>setShowRefund(null)} showToast={showToast} setOrders={setOrders} setProducts={setProducts} products={products}/>}
     </>
   );
 }
@@ -2070,7 +2191,7 @@ function ClearancePage({ products, isAdmin, addToCart, user }) {
                 </div>}
                 <div className="prod-srp">SRP: {fmt(p.retail_price)}</div>
                 <div className="prod-stock">{p.stock} in stock</div>
-                {!isAdmin&&user?.approved&&!isConsignment&&<button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} disabled={p.stock===0} onClick={()=>addToCart({...p,wholesale_price:p.clearance_price||p.wholesale_price},p.min_order)}>Add to Cart</button>}
+                {!isAdmin&&user?.approved&&<button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} disabled={p.stock===0} onClick={()=>addToCart({...p,wholesale_price:isConsignment?0:p.clearance_price||p.wholesale_price},p.min_order)}>Add to Cart</button>}
                 {isConsignment&&<div className="alert alert-info" style={{padding:"6px 10px",fontSize:11,marginTop:8}}>Contact us for pricing</div>}
               </div>
             </div>
@@ -2655,7 +2776,7 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
         </select>
       </div>
 
-      {isConsignment&&<div className="alert alert-info mb-4">👁 You are viewing as a consignment customer. Contact us for pricing and to place orders.</div>}
+      {isConsignment&&<div className="alert alert-info mb-4">🛒 You are a consignment customer. Add items to cart and place your order — our team will confirm pricing with you.</div>}
 
       <div className="prod-grid">
         {filtered.map(p=>{
@@ -2681,29 +2802,26 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
                 </>}
                 <div className="prod-stock">{p.stock} in stock · Min: {p.min_order}{qty>0?` · ${qty} in cart`:""}</div>
                 <div style={{fontSize:11,color:"var(--text2)",marginBottom:10,lineHeight:1.4}}>{p.description}</div>
-                {!isConsignment&&<>
-                  <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
-                    <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
-                    <input
-                      type="number"
-                      min={p.min_order||1}
-                      max={p.stock}
-                      defaultValue={p.min_order||1}
-                      id={`qty-${p.id}`}
-                      style={{width:"70px",textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}
-                      onClick={e=>e.stopPropagation()}
-                    />
-                    <div style={{fontSize:10,color:"var(--text3)"}}>min {p.min_order||1}</div>
-                  </div>
-                  <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} onClick={()=>{
-                    const inp=document.getElementById(`qty-${p.id}`);
-                    const val=Math.max(p.min_order||1, Math.min(p.stock, parseInt(inp?.value)||p.min_order||1));
-                    addToCart(p, val);
-                  }}>
-                    {qty>0?"➕ Add More":"Add to Cart"}
-                  </button>
-                </>}
-                {isConsignment&&<div className="alert alert-info" style={{padding:"6px 10px",fontSize:11}}>Contact us for pricing & ordering</div>}
+                <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+                  <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
+                  <input
+                    type="number"
+                    min={p.min_order||1}
+                    max={p.stock}
+                    defaultValue={p.min_order||1}
+                    id={`qty-${p.id}`}
+                    style={{width:"70px",textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}
+                    onClick={e=>e.stopPropagation()}
+                  />
+                  <div style={{fontSize:10,color:"var(--text3)"}}>min {p.min_order||1}</div>
+                </div>
+                <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} onClick={()=>{
+                  const inp=document.getElementById(`qty-${p.id}`);
+                  const val=Math.max(p.min_order||1, Math.min(p.stock, parseInt(inp?.value)||p.min_order||1));
+                  addToCart(p, val);
+                }}>
+                  {qty>0?"➕ Add More":"Add to Cart"}
+                </button>
               </div>
             </div>
           );
