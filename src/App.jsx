@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ─── SUPABASE CONFIG ───────────────────────────────────────────────────────────
@@ -692,7 +692,7 @@ export default function App() {
           </div>
           <div className="content">
             {page==="dashboard" && <DashboardPage products={products} orders={orders} customers={customers} transfers={transfers} settings={settings} setPage={setPage}/>}
-            {page==="products" && <ProductsPage products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} orders={orders} transfers={transfers} settings={settings} showToast={showToast} isAdmin={isAdmin}/>}
+            {page==="products" && <ProductsErrorBoundary><ProductsPage products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} orders={orders} transfers={transfers} settings={settings} showToast={showToast} isAdmin={isAdmin}/></ProductsErrorBoundary>}
             {page==="categories" && <CategoriesPage products={products} extraCategories={settings.extra_categories?JSON.parse(settings.extra_categories):[]} setExtraCategories={(v)=>setSettings(p=>({...p,extra_categories:JSON.stringify(v)}))} showToast={showToast}/>}
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
@@ -959,6 +959,21 @@ function DashboardPage({ products, orders, customers, transfers, settings, setPa
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── PRODUCTS PAGE ────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
+
+class ProductsErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  render() {
+    if (this.state.error) return (
+      <div style={{padding:24,background:"#fff0f0",borderRadius:8,margin:16}}>
+        <h3 style={{color:"red"}}>Products Page Error</h3>
+        <pre style={{fontSize:12,whiteSpace:"pre-wrap",color:"#c00"}}>{this.state.error?.message}\n{this.state.error?.stack}</pre>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
 function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, transfers, settings, showToast, isAdmin }) {
   const [search,setSearch]=useState("");
   const [filterCat,setFilterCat]=useState("All");
