@@ -634,7 +634,7 @@ export default function App() {
       updated_at: new Date().toISOString(),
       status: newCart.length > 0 ? "active" : "cleared"
     };
-    await supabase.from("customer_carts").upsert(payload, {onConflict:"customer_id"}).catch(()=>{});
+    try { await supabase.from("customer_carts").upsert(payload, {onConflict:"customer_id"}); } catch(e) {}
     if(user.role==="admin") return;
     setCustomerCarts(prev=>{
       const idx=prev.findIndex(c=>c.customer_id===user.id);
@@ -691,7 +691,7 @@ export default function App() {
     setOrders(prev=>[o,...prev]);
     setCart([]); setShowCart(false);
     // Mark cart as converted in Supabase
-    await supabase.from("customer_carts").upsert({customer_id:user.id,items:"[]",item_count:0,subtotal:0,status:"converted",updated_at:new Date().toISOString()},{onConflict:"customer_id"}).catch(()=>{});
+    try { await supabase.from("customer_carts").upsert({customer_id:user.id,items:"[]",item_count:0,subtotal:0,status:"converted",updated_at:new Date().toISOString()},{onConflict:"customer_id"}); } catch(e) {}
     setCustomerCarts(prev=>prev.map(c=>c.customer_id===user.id?{...c,items:"[]",item_count:0,status:"converted"}:c));
     setModal({type:"orderSuccess",data:o});
   };
@@ -1197,7 +1197,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       const {data, error} = await supabase.from("products").insert(prod).select().single();
       if (data) {
         imported.push(data);
-        await supabase.from("activity_log").insert({action:"product_added",details:`Imported: ${prod.name}`,entity_type:"product",entity_id:String(data.id||""),user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+        try { await supabase.from("activity_log").insert({action:"product_added",details:`Imported: ${prod.name}`,entity_type:"product",entity_id:String(data.id||""),user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}
       }
       else if (error) { lastError = error.message; console.error("Import error:", prod.name, error.message); }
     }
@@ -1306,7 +1306,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                       <div className="tbl-actions">
                         <button className="btn btn-ghost btn-xs" onClick={()=>setShowHistory(p)}>History</button>
                         <button className="btn btn-secondary btn-xs" onClick={()=>{setEditing(p);setShowModal(true);}}>Edit</button>
-                        {!p.active?<button className="btn btn-ghost btn-xs" onClick={()=>restore(p.id)}>Restore</button>:<button className="btn btn-warn btn-xs" onClick={async()=>{await supabase.from("products").update({active:false}).eq("id",p.id);await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");}}>Archive</button>}
+                        {!p.active?<button className="btn btn-ghost btn-xs" onClick={()=>restore(p.id)}>Restore</button>:<button className="btn btn-warn btn-xs" onClick={async()=>{await supabase.from("products").update({active:false}).eq("id",p.id);try { await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");}}>Archive</button>}
                         <button className="btn btn-danger btn-xs" onClick={()=>hardDelete(p.id)}>Del</button>
                       </div>
                     </td>
@@ -1343,7 +1343,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     }
     const {error} = await supabase.from("products").update(payload).eq("id",editing.id);
     if(error){ showToast("Save failed: "+error.message,"err"); return; }
-    await supabase.from("activity_log").insert({action:"product_updated",details:`Updated: ${data.name}`,entity_type:"product",entity_id:editing.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+    try { await supabase.from("activity_log").insert({action:"product_updated",details:`Updated: ${data.name}`,entity_type:"product",entity_id:editing.id,user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}
     setProducts(p=>p.map(x=>x.id===editing.id?{...x,...payload}:x));
     showToast("Product updated");
   } else {
@@ -1365,7 +1365,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
     if(error){ showToast("Save failed: "+error.message,"err"); return; }
     if(saved){
-      await supabase.from("activity_log").insert({action:"product_added",details:`Added: ${data.name}`,entity_type:"product",entity_id:saved.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
+      try { await supabase.from("activity_log").insert({action:"product_added",details:`Added: ${data.name}`,entity_type:"product",entity_id:saved.id,user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}
       setProducts(p=>[saved,...p]);
       showToast("Product added");
     }
@@ -1841,7 +1841,7 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
       if(!isAuthErr){ showToast("Failed to save stock take record","err"); return; }
       console.warn("Stock take RLS warning (stock still updated):", stErr?.code||stErr?.hint);
     } else {
-      await supabase.from("stock_take_items").insert(items.map(i=>({...i,stock_take_id:stId}))).catch(()=>{});
+      try { await supabase.from("stock_take_items").insert(items.map(i=>({...i,stock_take_id:stId}))); } catch(e) {}
     }
     // Always update local state regardless
     setStockTakes(p=>[{...stRow, items},...p]);
@@ -2474,7 +2474,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
   });
 
   const logAct = async(action,details,entity_type="",entity_id="") => {
-    await supabase.from("activity_log").insert({action,details,entity_type,entity_id:String(entity_id||""),user_name:"Admin",timestamp:new Date().toISOString()}).catch(e=>console.warn("Log err:",e));
+    try { await supabase.from("activity_log").insert({action,details,entity_type,entity_id:String(entity_id||""),user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) { console.warn("Log err:",e); }
   };
 
   const approve=async(id,type)=>{
