@@ -3156,7 +3156,7 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
             cost:0, stock:0, low_stock_threshold:data.low_stock_threshold||5,
             min_order:data.min_order||1, description:data.description||"",
             image_url:data.image_url||null, is_clearance:false, clearance_price:null,
-            active:false, created_at:new Date().toISOString()
+            active:true, created_at:new Date().toISOString()
           };
           const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
           if(error||!saved){ alert("Failed: "+(error?.message||"unknown")); return; }
