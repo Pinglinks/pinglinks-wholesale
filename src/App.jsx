@@ -410,7 +410,7 @@ function printInvoice(order, customer, settings, isConsignment=false) {
 
 // ─── STATUS BADGE ─────────────────────────────────────────────────────────────
 function StatusBadge({ status }) {
-  const map = { pending:["bw","⏳ Pending"], processing:["bb","🔄 Processing"], shipped:["bb","🚚 Shipped"], paid:["bg","✓ Paid"], delivered:["bg","✓ Delivered"], cancelled:["br","✕ Cancelled"] };
+  const map = { order:["bw","📋 Order"], partial_shipped:["bo","📦 Partial"], invoiced:["bg","🧾 Invoiced"], pending:["bw","⏳ Pending"], processing:["bb","🔄 Processing"], shipped:["bb","🚚 Shipped"], paid:["bg","✓ Paid"], delivered:["bg","✓ Delivered"], cancelled:["br","✕ Cancelled"], open:["bb","⏳ Open"], fulfilled:["bg","✓ Fulfilled"] };
   const [cls,label] = map[status]||["bgr",status];
   return <span className={`badge ${cls}`}>{label}</span>;
 }
@@ -487,6 +487,7 @@ export default function App() {
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [orders, setOrders]     = useState([]);
+  const [backorders, setBackorders] = useState([]);
   const [transfers, setTransfers] = useState([]);
   const [stockTakes, setStockTakes] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
@@ -539,6 +540,7 @@ export default function App() {
         { data: cartList },
         { data: stList },
         { data: stItems },
+        { data: boList },
       ] = await Promise.all([
         supabase.from("products").select("*").order("name"),
         u.role === "admin" ? supabase.from("profiles").select("*").eq("role","buyer").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
@@ -557,6 +559,7 @@ export default function App() {
         u.role === "admin" ? supabase.from("customer_carts").select("*").order("updated_at",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("stock_takes").select("*").order("date",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("stock_take_items").select("*") : Promise.resolve({data:[]}),
+        u.role === "admin" ? supabase.from("backorders").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
       ]);
       if (prods) setProducts(prods);
       if (custs) setCustomers(custs);
@@ -593,6 +596,7 @@ export default function App() {
         }));
         setStockTakes(merged);
       }
+      if (boList) setBackorders(boList);
     } catch(e) { console.error("Load error:", e); }
     setLoading(false);
   }, []);
@@ -683,11 +687,11 @@ export default function App() {
     const customer = customers.find(c=>c.id===user.id) || user;
     const minVal = customer.min_order_value||0;
     if (cartSubtotal < minVal) { showToast(`Minimum order value is ${fmt(minVal)}`,"err"); return; }
-    const id = genId(settings.invoice_prefix||"INV", orders);
+    const id = genId("ORD", orders);
     const orderData = {
       id, customer_id: user.id,
       customer_name: customer.company || user.name,
-      date: today(), status: "pending",
+      date: today(), status: "order",
       payment_method: payMethod,
       subtotal: cartSubtotal, tax_rate: settings.tax_rate,
       tax_amount: cartTax, total: cartTotal,
@@ -723,7 +727,9 @@ export default function App() {
       {id:"transfers",icon:"🏪",label:"Store Transfers"},
     ]},
     {section:"Sales", items:[
-      {id:"orders",icon:"🧾",label:"Invoices"},
+      {id:"orders",icon:"📋",label:"Orders"},
+      {id:"backorders",icon:"⏳",label:"Back Orders"},
+      {id:"invoices",icon:"🧾",label:"Invoices"},
       {id:"carts",icon:"🛒",label:"Customer Carts"},
       {id:"clearance",icon:"🔥",label:"Clearance"},
     ]},
@@ -752,7 +758,7 @@ export default function App() {
     {section:"Account", items:[{id:"account",icon:"👤",label:"Account"}]},
   ];
 
-  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders",account:"My Account",salesreps:"Sales Reps" };
+  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Orders",backorders:"Back Orders",invoices:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders",account:"My Account",salesreps:"Sales Reps" };
 
   return (
     <>
@@ -810,7 +816,9 @@ export default function App() {
             {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} settings={settings} showToast={showToast}/>}
             {page==="purchaseorders" && <PurchaseOrdersPage purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} settings={settings} showToast={showToast}/>}
             {page==="incoming" && <IncomingStockPage purchaseOrders={purchaseOrders} products={products}/>}
-            {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
+            {page==="orders" && <OrdersPage orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} customers={customers} settings={settings} showToast={showToast} products={products} setProducts={setProducts}/>}
+            {page==="backorders" && <BackordersPage backorders={backorders} setBackorders={setBackorders} orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} products={products} setProducts={setProducts}/>}
+            {page==="invoices" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} salesReps={salesReps} showToast={showToast}/>}
             {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders}/>}
@@ -1043,7 +1051,7 @@ function DashboardPage({ products, orders, customers, transfers, settings, setPa
       <div className="two-col" style={{gap:18}}>
         {/* Recent Orders */}
         <div className="card">
-          <div className="card-header"><h3>Recent Invoices</h3><button className="btn btn-ghost btn-sm" onClick={()=>setPage("orders")}>View All</button></div>
+          <div className="card-header"><h3>Recent Invoices</h3><button className="btn btn-ghost btn-sm" onClick={()=>setPage("invoices")}>View All</button></div>
           <div className="tbl-wrap">
             <table><thead><tr><th>Invoice</th><th>Customer</th><th>Total</th><th>Status</th></tr></thead>
               <tbody>{orders.slice(0,5).map(o=>(
@@ -2324,6 +2332,350 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── ORDERS PAGE (Admin - active orders before invoicing) ─────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, settings, showToast, products, setProducts }) {
+  const [search, setSearch] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const [shipModal, setShipModal] = useState(null);
+
+  const activeOrders = useMemo(() => orders.filter(o => {
+    if (o.status !== "order" && o.status !== "partial_shipped") return false;
+    if (filterDate && !o.date?.startsWith(filterDate)) return false;
+    const q = search.toLowerCase();
+    if (q && !o.id.toLowerCase().includes(q) && !o.customer_name?.toLowerCase().includes(q)) return false;
+    return true;
+  }), [orders, search, filterDate]);
+
+  const { sorted, key, dir, toggle } = useSort(activeOrders, "date");
+  const pg = usePagination(sorted, 20);
+
+  return (
+    <>
+      <div className="filter-bar">
+        <div className="search-wrap" style={{flex:2}}>
+          <span className="search-icon">🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by order # or customer…"/>
+        </div>
+        <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
+        <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
+      </div>
+
+      <div className="card">
+        <div className="tbl-wrap">
+          <table>
+            <thead><tr>
+              <SortTh label="Order #" sortKey="id" current={key} dir={dir} onToggle={toggle}/>
+              <SortTh label="Customer" sortKey="customer_name" current={key} dir={dir} onToggle={toggle}/>
+              <SortTh label="Date" sortKey="date" current={key} dir={dir} onToggle={toggle}/>
+              <th>Type</th>
+              <th>Payment</th>
+              <SortTh label="Total" sortKey="total" current={key} dir={dir} onToggle={toggle}/>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr></thead>
+            <tbody>{pg.sliced.map(o => (
+              <tr key={o.id}>
+                <td><code>{o.id}</code></td>
+                <td style={{fontWeight:500}}>{o.customer_name}</td>
+                <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
+                <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
+                <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
+                <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
+                <td><StatusBadge status={o.status}/></td>
+                <td><div className="tbl-actions">
+                  <button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>🚚 Ship</button>
+                </div></td>
+              </tr>
+            ))}
+            {pg.sliced.length === 0 && <tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No active orders.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div style={{padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"1px solid var(--border)"}}>
+          <span style={{fontSize:12,color:"var(--text3)"}}>{pg.total} order{pg.total!==1?"s":""}</span>
+          <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage}/>
+        </div>
+      </div>
+
+      {shipModal && (
+        <ShipOrderModal
+          order={shipModal}
+          orders={orders}
+          setOrders={setOrders}
+          backorders={backorders}
+          setBackorders={setBackorders}
+          products={products}
+          setProducts={setProducts}
+          settings={settings}
+          showToast={showToast}
+          onClose={()=>setShipModal(null)}
+        />
+      )}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── SHIP ORDER MODAL ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, products, setProducts, settings, showToast, onClose, isBackorder=false, backorderRecord=null }) {
+  // Build line items - for backorders show backordered qty, for orders show full qty
+  const lineItems = isBackorder
+    ? (backorderRecord ? [{
+        product_id: backorderRecord.product_id,
+        name: backorderRecord.product_name,
+        qty: backorderRecord.qty_remaining,
+        unit_price: backorderRecord.unit_price,
+        barcode: backorderRecord.barcode || "",
+      }] : [])
+    : (order?.items || []);
+
+  const [shipQtys, setShipQtys] = useState(() => {
+    const init = {};
+    lineItems.forEach(item => { init[item.product_id] = item.qty; });
+    return init;
+  });
+  const [busy, setBusy] = useState(false);
+
+  const handleShip = async () => {
+    setBusy(true);
+    try {
+      const newBackorders = [];
+      const shippedItems = [];
+
+      for (const item of lineItems) {
+        const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, item.qty));
+        const remaining = item.qty - toShip;
+
+        if (toShip > 0) {
+          // Deduct stock
+          const { data: prod } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
+          if (prod) {
+            const newStock = Math.max(0, prod.stock - toShip);
+            await supabase.from("products").update({ stock: newStock }).eq("id", item.product_id);
+            setProducts(prev => prev.map(p => p.id === item.product_id ? {...p, stock: newStock} : p));
+          }
+          shippedItems.push({ ...item, qty_shipped: toShip });
+        }
+
+        if (remaining > 0) {
+          newBackorders.push({
+            order_id: order.id,
+            product_id: item.product_id,
+            product_name: item.name,
+            qty_ordered: item.qty,
+            qty_shipped: toShip,
+            qty_remaining: remaining,
+            unit_price: item.unit_price,
+            barcode: item.barcode || "",
+            status: "open",
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      // Insert backorders if any
+      if (newBackorders.length > 0) {
+        const { data: insertedBOs } = await supabase.from("backorders").insert(newBackorders).select();
+        if (insertedBOs) setBackorders(prev => [...prev, ...insertedBOs]);
+      }
+
+      // If this is fulfilling a backorder record, mark it fulfilled
+      if (isBackorder && backorderRecord) {
+        await supabase.from("backorders").update({ status: "fulfilled", qty_shipped: backorderRecord.qty_ordered }).eq("id", backorderRecord.id);
+        setBackorders(prev => prev.map(b => b.id === backorderRecord.id ? {...b, status:"fulfilled", qty_shipped: backorderRecord.qty_ordered} : b));
+      }
+
+      // Check if all backorders for this order are now fulfilled
+      const allBackorders = await supabase.from("backorders").select("*").eq("order_id", order.id).eq("status","open");
+      const remainingOpen = (allBackorders.data || []).filter(b => !isBackorder || b.id !== backorderRecord?.id);
+
+      const fullyComplete = newBackorders.length === 0 && remainingOpen.length === 0;
+
+      let newOrderStatus;
+      if (fullyComplete) {
+        newOrderStatus = "invoiced";
+      } else if (shippedItems.length > 0) {
+        newOrderStatus = "partial_shipped";
+      } else {
+        newOrderStatus = order.status;
+      }
+
+      await supabase.from("orders").update({ status: newOrderStatus }).eq("id", order.id);
+      setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: newOrderStatus} : o));
+
+      if (fullyComplete) {
+        showToast(`Order ${order.id} fully shipped → converted to Invoice ✓`);
+      } else if (newBackorders.length > 0) {
+        showToast(`Shipped partial — ${newBackorders.length} item(s) backordered`);
+      } else {
+        showToast("Shipped successfully");
+      }
+
+      onClose();
+    } catch(e) {
+      console.error(e);
+      showToast("Error processing shipment", "err");
+    }
+    setBusy(false);
+  };
+
+  const allZero = lineItems.every(item => !parseInt(shipQtys[item.product_id]));
+
+  return (
+    <div className="overlay"><div className="modal modal-md">
+      <div className="modal-head">
+        <h2>🚚 Ship {isBackorder ? "Backorder" : "Order"} — {order.id}</h2>
+        <button className="xbtn" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <p style={{fontSize:13,color:"var(--text2)",marginBottom:16}}>
+          Enter the quantity to ship for each item. Any remainder will be placed in <strong>Back Orders</strong>.
+          When all items are shipped, the order converts to an <strong>Invoice</strong>.
+        </p>
+        <div className="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th>Product</th>
+              <th style={{textAlign:"center"}}>Ordered</th>
+              <th style={{textAlign:"center"}}>Ship Qty</th>
+              <th style={{textAlign:"center"}}>Backorder</th>
+            </tr></thead>
+            <tbody>{lineItems.map(item => {
+              const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, item.qty));
+              const bo = item.qty - toShip;
+              return (
+                <tr key={item.product_id}>
+                  <td style={{fontWeight:500}}>{item.name}</td>
+                  <td style={{textAlign:"center"}}>{item.qty}</td>
+                  <td style={{textAlign:"center"}}>
+                    <input
+                      type="number" min={0} max={item.qty}
+                      value={shipQtys[item.product_id] ?? item.qty}
+                      onChange={e => setShipQtys(prev => ({...prev, [item.product_id]: e.target.value}))}
+                      style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg3)"}}
+                    />
+                  </td>
+                  <td style={{textAlign:"center",color: bo > 0 ? "var(--warn)" : "var(--text3)", fontWeight: bo > 0 ? 600 : 400}}>
+                    {bo > 0 ? bo : "—"}
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table>
+        </div>
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={handleShip} disabled={busy || allZero}>
+          {busy ? "Processing…" : "Confirm Shipment"}
+        </button>
+      </div>
+    </div></div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── BACKORDERS PAGE ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function BackordersPage({ backorders, setBackorders, orders, setOrders, customers, settings, showToast, products, setProducts }) {
+  const [search, setSearch] = useState("");
+  const [shipModal, setShipModal] = useState(null); // { order, backorderRecord }
+
+  const openBackorders = useMemo(() => backorders.filter(b => {
+    if (b.status !== "open") return false;
+    const q = search.toLowerCase();
+    if (q && !b.order_id?.toLowerCase().includes(q) && !b.product_name?.toLowerCase().includes(q)) return false;
+    return true;
+  }), [backorders, search]);
+
+  // Group by order_id
+  const grouped = useMemo(() => {
+    const map = {};
+    openBackorders.forEach(b => {
+      if (!map[b.order_id]) map[b.order_id] = [];
+      map[b.order_id].push(b);
+    });
+    return map;
+  }, [openBackorders]);
+
+  return (
+    <>
+      <div className="filter-bar">
+        <div className="search-wrap" style={{flex:2}}>
+          <span className="search-icon">🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by order # or product…"/>
+        </div>
+      </div>
+
+      {Object.keys(grouped).length === 0 && (
+        <div className="empty"><div className="ei">📭</div><p>No open back orders.</p></div>
+      )}
+
+      {Object.entries(grouped).map(([orderId, items]) => {
+        const order = orders.find(o => o.id === orderId);
+        return (
+          <div key={orderId} className="card" style={{marginBottom:14}}>
+            <div className="card-header">
+              <div>
+                <div style={{fontFamily:"Syne",fontWeight:700}}>{orderId}</div>
+                <div style={{fontSize:11,color:"var(--text2)",marginTop:2}}>{order?.customer_name} · Ordered {order?.date}</div>
+              </div>
+              <StatusBadge status={order?.status||"partial_shipped"}/>
+            </div>
+            <div className="card-body" style={{padding:0}}>
+              <div className="tbl-wrap">
+                <table>
+                  <thead><tr>
+                    <th>Product</th>
+                    <th style={{textAlign:"center"}}>Ordered</th>
+                    <th style={{textAlign:"center"}}>Shipped</th>
+                    <th style={{textAlign:"center"}}>Remaining</th>
+                    <th>Actions</th>
+                  </tr></thead>
+                  <tbody>{items.map(b => (
+                    <tr key={b.id}>
+                      <td style={{fontWeight:500}}>{b.product_name}</td>
+                      <td style={{textAlign:"center"}}>{b.qty_ordered}</td>
+                      <td style={{textAlign:"center"}}>{b.qty_shipped}</td>
+                      <td style={{textAlign:"center",color:"var(--warn)",fontWeight:600}}>{b.qty_remaining}</td>
+                      <td>
+                        <button className="btn btn-primary btn-xs" onClick={()=>setShipModal({order, backorderRecord: b})}>
+                          🚚 Ship
+                        </button>
+                      </td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {shipModal && (
+        <ShipOrderModal
+          order={shipModal.order}
+          orders={orders}
+          setOrders={setOrders}
+          backorders={backorders}
+          setBackorders={setBackorders}
+          products={products}
+          setProducts={setProducts}
+          settings={settings}
+          showToast={showToast}
+          isBackorder={true}
+          backorderRecord={shipModal.backorderRecord}
+          onClose={()=>setShipModal(null)}
+        />
+      )}
+    </>
+  );
+}
+
+
 function InvoicesPage({ orders, setOrders, customers, settings, showToast, setModal, setProducts, products }) {
   const [search,setSearch]=useState("");
   const [filterStatus,setFilterStatus]=useState("all");
@@ -2332,6 +2684,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
   const [showRefund,setShowRefund]=useState(null);
 
   const filtered=useMemo(()=>orders.filter(o=>{
+    if(o.status!=="invoiced")return false;
     if(filterStatus!=="all"&&o.status!==filterStatus)return false;
     if(filterDate&&!o.date?.startsWith(filterDate))return false;
     const q=search.toLowerCase();
@@ -2374,8 +2727,8 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by invoice # or customer name…"/>
         </div>
         <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={{width:"auto"}}>
-          <option value="all">All Statuses</option>
-          {["pending","processing","shipped","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
+          <option value="all">All</option>
+          {["invoiced","paid","delivered","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
         </select>
         <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
         <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
@@ -2405,14 +2758,14 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
                 <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
                 <td>
                   <select value={o.status} onChange={e=>updateStatus(o.id,e.target.value)} style={{padding:"3px 6px",fontSize:11,width:"auto",background:"var(--bg3)"}}>
-                    {["pending","processing","shipped","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
+                    {["invoiced","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
                   </select>
                 </td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>View</button>
                   <button className="btn btn-ghost btn-xs" onClick={()=>{ const c=customers.find(x=>x.id===o.customer_id); printInvoice(o,c,settings); }}>Print</button>
                   <button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>
-                  {(o.status==="shipped"||o.status==="delivered"||o.status==="paid")&&<button className="btn btn-warn btn-xs" onClick={()=>setShowRefund(o)}>↩ Refund</button>}
+                  {(o.status==="invoiced"||o.status==="shipped"||o.status==="delivered"||o.status==="paid")&&<button className="btn btn-warn btn-xs" onClick={()=>setShowRefund(o)}>↩ Refund</button>}
                 </div></td>
               </tr>
             ))}
@@ -2421,7 +2774,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
           </table>
         </div>
         <div style={{padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"1px solid var(--border)"}}>
-          <span style={{fontSize:12,color:"var(--text3)"}}>{pg.total} invoices · Total: {fmt(filtered.reduce((s,o)=>s+o.total,0))}</span>
+          <span style={{fontSize:12,color:"var(--text3)"}}>{pg.total} invoice{pg.total!==1?"s":""} · Total: {fmt(filtered.reduce((s,o)=>s+o.total,0))}</span>
           <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage}/>
         </div>
       </div>
@@ -3647,7 +4000,7 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
   };
 
   const filteredOrders = useMemo(()=>orders.filter(o=>{
-    if(o.status==="cancelled") return false;
+    if(o.status==="cancelled"||o.status==="order"||o.status==="partial_shipped") return false;
     if(o.date < fromDate || o.date > toDate) return false;
     if(keyword) {
       const kw=keyword.toLowerCase();
@@ -3714,7 +4067,7 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
         ...filteredOrders.map(o=>[o.date,o.id,o.customer_name,o.subtotal,`${o.tax_rate||0}%`,o.tax_amount,o.total])];
       filename=`tax_report_${fromDate}_${toDate}.csv`;
     } else if(type==="unpaid"){
-      const unpaid=orders.filter(o=>o.status==="pending"&&o.date>=fromDate&&o.date<=toDate);
+      const unpaid=orders.filter(o=>o.status==="invoiced"&&o.date>=fromDate&&o.date<=toDate);
       rows=[["Invoice #","Customer","Date","Total","Type"],
         ...unpaid.map(o=>[o.id,o.customer_name,o.date,o.total,o.type||"standard"])];
       filename=`unpaid_invoices_${fromDate}_${toDate}.csv`;
@@ -4238,7 +4591,7 @@ function MyOrdersPage({ orders, settings, customers, setModal, user }) {
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               <StatusBadge status={o.status}/>
               {!isConsignment&&<div style={{fontFamily:"Syne",fontWeight:700,fontSize:17,color:"var(--accent)"}}>{fmt(o.total)}</div>}
-              <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>View Invoice</button>
+              <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>{o.status==="invoiced"||o.status==="paid"||o.status==="delivered" ? "View Invoice" : "View Order"}</button>
             </div>
           </div>
           <div className="card-body">
@@ -4428,16 +4781,15 @@ function OrderSuccessModal({ order, settings, customers, onClose }) {
       <div className="modal-body" style={{textAlign:"center",padding:"36px 28px"}}>
         <div style={{fontSize:48,marginBottom:14}}>✅</div>
         <h2 style={{marginBottom:6}}>Order Placed!</h2>
-        <p style={{color:"var(--text2)",marginBottom:14,fontSize:13}}>Your order has been received and is being processed.</p>
+        <p style={{color:"var(--text2)",marginBottom:14,fontSize:13}}>Your order has been received. We'll notify you once it ships.</p>
         <div style={{background:"var(--bg3)",borderRadius:10,padding:"14px 18px",marginBottom:18,textAlign:"left"}}>
-          <div style={{fontSize:11,color:"var(--text3)",marginBottom:3}}>INVOICE</div>
+          <div style={{fontSize:11,color:"var(--text3)",marginBottom:3}}>ORDER #</div>
           <div style={{fontFamily:"Syne",fontWeight:700,fontSize:18}}>{order.id}</div>
           <div style={{marginTop:6,fontSize:13,color:"var(--text2)"}}>Total: <strong style={{color:"var(--accent)"}}>{fmt(order.total)}</strong></div>
           <div style={{fontSize:12,color:"var(--text2)"}}>GCT ({order.tax_rate}%): {fmt(order.tax_amount)}</div>
           {order.type==="consignment"&&order.consignment_due&&<div style={{marginTop:4,fontSize:12,color:"var(--warn)"}}>Consignment due: {order.consignment_due}</div>}
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
-          <button className="btn btn-secondary" onClick={()=>printInvoice(order,customer,settings,order.type==="consignment")}>🖨 Print Invoice</button>
           <button className="btn btn-primary" onClick={onClose}>Done</button>
         </div>
       </div>
