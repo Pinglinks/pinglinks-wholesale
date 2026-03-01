@@ -794,7 +794,7 @@ export default function App() {
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
             {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} settings={settings} showToast={showToast}/>}
             {page==="purchaseorders" && <PurchaseOrdersPage purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} settings={settings} showToast={showToast}/>}
-            {page==="incoming" && <IncomingStockPage purchaseOrders={purchaseOrders}/>}
+            {page==="incoming" && <IncomingStockPage purchaseOrders={purchaseOrders} products={products}/>}
             {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} showToast={showToast}/>}
@@ -3236,7 +3236,7 @@ function ReceiveItemModal({ item, onReceive, onClose }) {
 
 // ─── INCOMING STOCK PAGE (CUSTOMER FACING) ───────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function IncomingStockPage({ purchaseOrders }) {
+function IncomingStockPage({ purchaseOrders, products }) {
   const [liveItems, setLiveItems] = useState(null); // null = not yet loaded
   const [loadError, setLoadError] = useState(false);
 
@@ -3244,22 +3244,29 @@ function IncomingStockPage({ purchaseOrders }) {
     // Always fetch fresh from DB so received qty is up to date
     Promise.all([
       supabase.from("purchase_orders").select("*").in("status",["open","partial"]),
-      supabase.from("purchase_order_items").select("*")
-    ]).then(([{data:pos,error:e1},{data:items,error:e2}])=>{
+      supabase.from("purchase_order_items").select("*"),
+      supabase.from("products").select("id,image_url,brand")
+    ]).then(([{data:pos,error:e1},{data:items,error:e2},{data:prods}])=>{
       if(e1||e2){ setLoadError(true); return; }
       const merged = (pos||[]).map(po=>({...po,items:(items||[]).filter(i=>i.po_id===po.id)}));
       const all = merged.flatMap(po=>(po.items||[])
         .filter(i=>(i.ordered_qty-(i.received_qty||0))>0)
-        .map(i=>({...i,expected_date:po.expected_date,supplier_name:po.supplier_name})));
+        .map(i=>{
+          const prod = (prods||[]).find(p=>p.id===i.product_id);
+          return {...i, expected_date:po.expected_date, supplier_name:po.supplier_name, image_url:prod?.image_url||null, brand:prod?.brand||""};
+        }));
       setLiveItems(all);
     }).catch(()=>setLoadError(true));
   },[]);
 
-  // While loading, fall back to prop data
+  // While loading, fall back to prop data (enriched with product image)
   const allItems = liveItems !== null ? liveItems :
     purchaseOrders.filter(po=>po.status==="open"||po.status==="partial")
       .flatMap(po=>(po.items||[]).filter(i=>(i.ordered_qty-(i.received_qty||0))>0)
-      .map(i=>({...i,expected_date:po.expected_date,supplier_name:po.supplier_name})));
+      .map(i=>{
+        const prod = (products||[]).find(p=>p.id===i.product_id);
+        return {...i, expected_date:po.expected_date, supplier_name:po.supplier_name, image_url:prod?.image_url||null, brand:prod?.brand||""};
+      }));
 
   const grouped = {};
   allItems.forEach(i=>{ const k=i.product_name||"Unknown"; if(!grouped[k])grouped[k]=[];grouped[k].push(i); });
@@ -3275,7 +3282,11 @@ function IncomingStockPage({ purchaseOrders }) {
           const totalQty = items.reduce((s,i)=>s+(i.ordered_qty-(i.received_qty||0)),0);
           return (
             <div key={name} className="prod-card">
-              <div className="prod-card-img"><span style={{fontSize:40}}>📬</span></div>
+              <div className="prod-card-img">
+                {items[0]?.image_url
+                  ? <img src={items[0].image_url} alt={name} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+                  : <span style={{fontSize:40}}>📬</span>}
+              </div>
               <div className="prod-card-body">
                 <div className="prod-card-name">{name}</div>
                 {items[0]?.barcode&&<div style={{fontSize:10,color:"var(--text3)",marginBottom:4}}>Barcode: {items[0].barcode}</div>}
