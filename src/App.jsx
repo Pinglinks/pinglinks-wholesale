@@ -1315,18 +1315,35 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       {showHistory&&<ProductHistoryModal product={showHistory} orders={orders} transfers={transfers} onClose={()=>setShowHistory(null)}/>}
       {showModal&&<ProductModal product={editing} suppliers={suppliers} categories={allCats.filter(c=>c!=="All")} onSave={async(data)=>{
   if(editing){
-    await supabase.from("products").update(data).eq("id",editing.id);
+    // Build clean update payload (only columns that exist in DB)
+    const payload = {
+      name:data.name, barcode:data.barcode||"", brand:data.brand||"",
+      category:data.category||"", supplier_id:data.supplier_id||null,
+      cost:data.cost, wholesale_price:data.wholesale_price, retail_price:data.retail_price,
+      stock:data.stock, low_stock_threshold:data.low_stock_threshold, min_order:data.min_order,
+      description:data.description||"", image_url:data.image_url||null,
+      is_clearance:data.is_clearance||false,
+      clearance_price:data.clearance_price||null
+    };
+    // Duplicate barcode check — exclude this product from check
+    if(payload.barcode){
+      const dupBarcode = products.find(p=>p.active&&p.barcode&&p.barcode===payload.barcode&&p.id!==editing.id);
+      if(dupBarcode){ showToast(`Barcode ${payload.barcode} is already used by "${dupBarcode.name}"`,"err"); return; }
+    }
+    const {error} = await supabase.from("products").update(payload).eq("id",editing.id);
+    if(error){ showToast("Save failed: "+error.message,"err"); return; }
     await supabase.from("activity_log").insert({action:"product_updated",details:`Updated: ${data.name}`,entity_type:"product",entity_id:editing.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
-    setProducts(p=>p.map(x=>x.id===editing.id?{...x,...data}:x));
+    setProducts(p=>p.map(x=>x.id===editing.id?{...x,...payload}:x));
     showToast("Product updated");
   } else {
-    // Duplicate check
+    // Duplicate check for new products
     const dupName = products.find(p=>p.active&&p.name?.toLowerCase()===data.name?.toLowerCase());
     const dupBarcode = data.barcode&&products.find(p=>p.active&&p.barcode&&p.barcode===data.barcode);
     if(dupName){ showToast(`A product named "${data.name}" already exists`,"err"); return; }
     if(dupBarcode){ showToast(`Barcode ${data.barcode} is already used by "${dupBarcode.name}"`,"err"); return; }
     const prod={...data,active:true,created_at:new Date().toISOString()};
-    const {data:saved} = await supabase.from("products").insert(prod).select().single();
+    const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
+    if(error){ showToast("Save failed: "+error.message,"err"); return; }
     if(saved){
       await supabase.from("activity_log").insert({action:"product_added",details:`Added: ${data.name}`,entity_type:"product",entity_id:saved.id,user_name:"Admin",timestamp:new Date().toISOString()}).catch(()=>{});
       setProducts(p=>[saved,...p]);
