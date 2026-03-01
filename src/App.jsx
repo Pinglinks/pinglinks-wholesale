@@ -1860,12 +1860,12 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
       const prod = products.find(p=>p.id===id);
       const variance = +c - (prod?.stock||0);
       await supabase.from("products").update({stock:+c}).eq("id",id);
-      await supabase.from("activity_log").insert({
+      try { await supabase.from("activity_log").insert({
         action:"stock_take",
         details:`Stock take: counted ${c} (was ${prod?.stock||0}, variance ${variance>0?"+":""}${variance}) — ${stId}`,
         entity_type:"product", entity_id:String(id),
         user_name:"Admin", timestamp:new Date().toISOString()
-      }).catch(()=>{});
+      }); } catch(e) {}
     }
     setProducts(p=>p.map(x=>{const c=counts[x.id];return c!==undefined&&c!==""?{...x,stock:+c}:x;}));
     setCounts({}); setNotes("");
@@ -2222,12 +2222,12 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
     }:o));
 
     // Log
-    await supabase.from("activity_log").insert({
+    try { await supabase.from("activity_log").insert({
       action:"refund_processed",
       details:`Refund of ${refundItems.length} item(s) totaling ${fmt(refundTotal)} on order ${order.id}. Order total reduced to ${fmt(newTotal)}.`,
       entity_type:"order", entity_id:String(order.id),
       user_name:"Admin", timestamp:new Date().toISOString()
-    }).catch(()=>{});
+    }); } catch(e) {}
 
     setProcessing(false);
     showToast(`Refund processed — ${fmt(refundTotal)} deducted, ${refundItems.length} item(s) returned to stock`);
@@ -2942,12 +2942,12 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
       const avgCost = newStock > 0 ? Math.round((existingValue + receiveQty*newCost)/newStock) : newCost;
       await supabase.from("products").update({stock:newStock, cost:avgCost, active:true}).eq("id",prod.id);
       setProducts(prev=>prev.map(p=>p.id===prod.id?{...p,stock:newStock,cost:avgCost,active:true}:p));
-      await supabase.from("activity_log").insert({
+      try { await supabase.from("activity_log").insert({
         action:"stock_received",
         details:`Received ${receiveQty} units @ ${fmt(newCost)} (avg cost now ${fmt(avgCost)}) via PO ${po.id}`,
         entity_type:"product", entity_id:String(prod.id),
         user_name:"Admin", timestamp:new Date().toISOString()
-      }).catch(()=>{});
+      }); } catch(e) {}
     }
 
     const newReceived = (item.received_qty||0) + receiveQty;
@@ -3188,8 +3188,13 @@ function ReceiveItemModal({ item, onReceive, onClose }) {
 
   const handle = async () => {
     setBusy(true);
-    await onReceive(item, qty, cost);
-    setBusy(false);
+    try {
+      await onReceive(item, qty, cost);
+    } catch(e) {
+      console.error("Receive error:", e);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -3232,15 +3237,38 @@ function ReceiveItemModal({ item, onReceive, onClose }) {
 // ─── INCOMING STOCK PAGE (CUSTOMER FACING) ───────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function IncomingStockPage({ purchaseOrders }) {
-  const incoming = purchaseOrders.filter(po=>po.status==="open"||po.status==="partial");
-  const allItems = incoming.flatMap(po=>(po.items||[]).filter(i=>(i.ordered_qty-(i.received_qty||0))>0).map(i=>({...i,po_id:po.id,expected_date:po.expected_date,supplier_name:po.supplier_name})));
+  const [liveItems, setLiveItems] = useState(null); // null = not yet loaded
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(()=>{
+    // Always fetch fresh from DB so received qty is up to date
+    Promise.all([
+      supabase.from("purchase_orders").select("*").in("status",["open","partial"]),
+      supabase.from("purchase_order_items").select("*")
+    ]).then(([{data:pos,error:e1},{data:items,error:e2}])=>{
+      if(e1||e2){ setLoadError(true); return; }
+      const merged = (pos||[]).map(po=>({...po,items:(items||[]).filter(i=>i.po_id===po.id)}));
+      const all = merged.flatMap(po=>(po.items||[])
+        .filter(i=>(i.ordered_qty-(i.received_qty||0))>0)
+        .map(i=>({...i,expected_date:po.expected_date,supplier_name:po.supplier_name})));
+      setLiveItems(all);
+    }).catch(()=>setLoadError(true));
+  },[]);
+
+  // While loading, fall back to prop data
+  const allItems = liveItems !== null ? liveItems :
+    purchaseOrders.filter(po=>po.status==="open"||po.status==="partial")
+      .flatMap(po=>(po.items||[]).filter(i=>(i.ordered_qty-(i.received_qty||0))>0)
+      .map(i=>({...i,expected_date:po.expected_date,supplier_name:po.supplier_name})));
+
   const grouped = {};
   allItems.forEach(i=>{ const k=i.product_name||"Unknown"; if(!grouped[k])grouped[k]=[];grouped[k].push(i); });
 
   return (
     <div>
       <div className="alert alert-info" style={{marginBottom:16}}>📬 These items are on order and expected to arrive soon. Contact us to reserve or for more information.</div>
-      {allItems.length===0&&<div className="empty"><div className="ei">📬</div><h3>No Incoming Stock</h3><p>Check back soon for new arrivals.</p></div>}
+      {liveItems===null&&!loadError&&<div style={{textAlign:"center",padding:24,color:"var(--text3)"}}>Loading…</div>}
+      {allItems.length===0&&liveItems!==null&&<div className="empty"><div className="ei">📬</div><h3>No Incoming Stock</h3><p>Check back soon for new arrivals.</p></div>}
       <div className="prod-grid">
         {Object.entries(grouped).map(([name,items])=>{
           const earliest = items.map(i=>i.expected_date).filter(Boolean).sort()[0];
