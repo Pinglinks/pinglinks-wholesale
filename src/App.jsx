@@ -788,7 +788,7 @@ export default function App() {
           </div>
           <div className="content">
             {page==="dashboard" && <DashboardPage products={products} orders={orders} customers={customers} transfers={transfers} settings={settings} setPage={setPage}/>}
-            {page==="products" && <ProductsErrorBoundary><ProductsPage products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} orders={orders} transfers={transfers} settings={settings} showToast={showToast} isAdmin={isAdmin}/></ProductsErrorBoundary>}
+            {page==="products" && <ProductsErrorBoundary><ProductsPage products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} orders={orders} transfers={transfers} purchaseOrders={purchaseOrders} settings={settings} showToast={showToast} isAdmin={isAdmin}/></ProductsErrorBoundary>}
             {page==="categories" && <CategoriesPage products={products} extraCategories={settings.extra_categories?JSON.parse(settings.extra_categories):[]} setExtraCategories={(v)=>setSettings(p=>({...p,extra_categories:JSON.stringify(v)}))} showToast={showToast}/>}
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
@@ -1073,7 +1073,7 @@ class ProductsErrorBoundary extends React.Component {
   }
 }
 
-function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, transfers, settings, showToast, isAdmin }) {
+function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, transfers, purchaseOrders, settings, showToast, isAdmin }) {
   const [search,setSearch]=useState("");
   const [filterCat,setFilterCat]=useState("All");
   const [filterSupplier,setFilterSupplier]=useState("All");
@@ -1271,6 +1271,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
               <SortTh label="Wholesale" sortKey="wholesale_price" current={key} dir={dir} onToggle={toggle}/>
               <SortTh label="SRP" sortKey="retail_price" current={key} dir={dir} onToggle={toggle}/>
               <SortTh label="Stock" sortKey="stock" current={key} dir={dir} onToggle={toggle}/>
+              <th style={{color:"var(--accent2)"}}>Incoming</th>
               <th>Low Threshold</th>
               <th>Tags</th>
               <th>Actions</th>
@@ -1278,6 +1279,12 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
             <tbody>
               {pg.sliced.map(p=>{
                 const sup = suppliers.find(s=>s.id===p.supplier_id);
+                // Sum unreceived qty across all open/partial POs for this product
+                const incomingQty = (purchaseOrders||[])
+                  .filter(po=>po.status==="open"||po.status==="partial")
+                  .flatMap(po=>(po.items||[]))
+                  .filter(i=>i.product_id===p.id)
+                  .reduce((s,i)=>s+((i.ordered_qty||0)-(i.received_qty||0)),0);
                 return (
                   <tr key={p.id} style={{opacity:p.active?1:.5}}>
                     <td><input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggleSelect(p.id)}/></td>
@@ -1295,6 +1302,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                     <td>
                       <span style={{fontWeight:700,color:p.stock===0?"var(--danger)":p.stock<=p.low_stock_threshold?"var(--warn)":"var(--text)"}}>{p.stock}</span>
                     </td>
+                    <td style={{fontWeight:600,color:incomingQty>0?"var(--accent2)":"var(--text3)"}}>{incomingQty>0?`+${incomingQty}`:"—"}</td>
                     <td style={{color:"var(--text3)"}}>{p.low_stock_threshold}</td>
                     <td>
                       <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
@@ -1314,7 +1322,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                   </tr>
                 );
               })}
-              {pg.sliced.length===0&&<tr><td colSpan={13} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No products found.</td></tr>}
+              {pg.sliced.length===0&&<tr><td colSpan={14} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No products found.</td></tr>}
             </tbody>
           </table>
         </div>
