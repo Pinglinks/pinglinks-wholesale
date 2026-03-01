@@ -524,6 +524,8 @@ export default function App() {
         { data: poList },
         { data: poItems },
         { data: cartList },
+        { data: stList },
+        { data: stItems },
       ] = await Promise.all([
         supabase.from("products").select("*").order("name"),
         u.role === "admin" ? supabase.from("profiles").select("*").eq("role","buyer").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
@@ -539,6 +541,8 @@ export default function App() {
         u.role === "admin" ? supabase.from("purchase_orders").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("purchase_order_items").select("*") : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("customer_carts").select("*").order("updated_at",{ascending:false}) : Promise.resolve({data:[]}),
+        u.role === "admin" ? supabase.from("stock_takes").select("*").order("date",{ascending:false}) : Promise.resolve({data:[]}),
+        u.role === "admin" ? supabase.from("stock_take_items").select("*") : Promise.resolve({data:[]}),
       ]);
       if (prods) setProducts(prods);
       if (custs) setCustomers(custs);
@@ -567,6 +571,13 @@ export default function App() {
         setPurchaseOrders(merged);
       }
       if (cartList) setCustomerCarts(cartList);
+      if (stList && stItems) {
+        const merged = stList.map(st => ({
+          ...st,
+          items: (stItems || []).filter(i => i.stock_take_id === st.id)
+        }));
+        setStockTakes(merged);
+      }
     } catch(e) { console.error("Load error:", e); }
     setLoading(false);
   }, []);
@@ -781,7 +792,7 @@ export default function App() {
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
             {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} settings={settings} showToast={showToast}/>}
-            {page==="purchaseorders" && <PurchaseOrdersPage purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} products={products} setProducts={setProducts} suppliers={suppliers} settings={settings} showToast={showToast}/>}
+            {page==="purchaseorders" && <PurchaseOrdersPage purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} settings={settings} showToast={showToast}/>}
             {page==="incoming" && <IncomingStockPage purchaseOrders={purchaseOrders}/>}
             {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
@@ -1313,14 +1324,14 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       </div>
 
       {showHistory&&<ProductHistoryModal product={showHistory} orders={orders} transfers={transfers} onClose={()=>setShowHistory(null)}/>}
-      {showModal&&<ProductModal product={editing} suppliers={suppliers} categories={allCats.filter(c=>c!=="All")} onSave={async(data)=>{
+      {showModal&&<ProductModal product={editing} categories={allCats.filter(c=>c!=="All")} onSave={async(data)=>{
   if(editing){
     // Build clean update payload (only columns that exist in DB)
     const payload = {
       name:data.name, barcode:data.barcode||"", brand:data.brand||"",
-      category:data.category||"", supplier_id:data.supplier_id||null,
-      cost:data.cost, wholesale_price:data.wholesale_price, retail_price:data.retail_price,
-      stock:data.stock, low_stock_threshold:data.low_stock_threshold, min_order:data.min_order,
+      category:data.category||"",
+      wholesale_price:data.wholesale_price||0, retail_price:data.retail_price||0,
+      low_stock_threshold:data.low_stock_threshold||5, min_order:data.min_order||1,
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false,
       clearance_price:data.clearance_price||null
@@ -1341,7 +1352,16 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     const dupBarcode = data.barcode&&products.find(p=>p.active&&p.barcode&&p.barcode===data.barcode);
     if(dupName){ showToast(`A product named "${data.name}" already exists`,"err"); return; }
     if(dupBarcode){ showToast(`Barcode ${data.barcode} is already used by "${dupBarcode.name}"`,"err"); return; }
-    const prod={...data,active:true,created_at:new Date().toISOString()};
+    const prod={
+      name:data.name, barcode:data.barcode||"", brand:data.brand||"",
+      category:data.category||"Uncategorized",
+      wholesale_price:data.wholesale_price||0, retail_price:data.retail_price||0,
+      cost:0, stock:0,
+      low_stock_threshold:data.low_stock_threshold||5, min_order:data.min_order||1,
+      description:data.description||"", image_url:data.image_url||null,
+      is_clearance:data.is_clearance||false, clearance_price:data.clearance_price||null,
+      active:true, created_at:new Date().toISOString()
+    };
     const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
     if(error){ showToast("Save failed: "+error.message,"err"); return; }
     if(saved){
@@ -1462,19 +1482,18 @@ function ProductHistoryModal({ product, orders, transfers, onClose }) {
   );
 }
 
-function ProductModal({ product, suppliers, categories, onSave, onClose }) {
+function ProductModal({ product, categories, onSave, onClose }) {
   const [f,setF]=useState({
     barcode:product?.barcode||"", brand:product?.brand||"", name:product?.name||"",
-    category:product?.category||categories[0]||"", supplier_id:product?.supplier_id||suppliers[0]?.id||"",
-    cost:product?.cost||"", wholesale_price:product?.wholesale_price||"", retail_price:product?.retail_price||"",
-    stock:product?.stock||"", low_stock_threshold:product?.low_stock_threshold||5, min_order:product?.min_order||1,
+    category:product?.category||categories[0]||"",
+    wholesale_price:product?.wholesale_price||"", retail_price:product?.retail_price||"",
+    low_stock_threshold:product?.low_stock_threshold||5, min_order:product?.min_order||1,
     description:product?.description||"", image_url:product?.image_url||"",
     is_clearance:product?.is_clearance||false, clearance_price:product?.clearance_price||""
   });
   const [uploading, setUploading] = useState(false);
   const imgRef = useRef();
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
-  const margin = f.wholesale_price&&f.cost ? Math.round((1-f.cost/f.wholesale_price)*100) : 0;
 
   const handleImageUpload = async (file) => {
     if (!file) return;
@@ -1508,30 +1527,21 @@ function ProductModal({ product, suppliers, categories, onSave, onClose }) {
                 <div className="form-group"><label>Barcode</label><input value={f.barcode} onChange={e=>s("barcode",e.target.value)}/></div>
                 <div className="form-group"><label>Brand</label><input value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
               </div>
-              <div className="form-row">
-                <div className="form-group"><label>Category</label>
+              <div className="form-group"><label>Category</label>
                   <select value={f.category} onChange={e=>s("category",e.target.value)}>
                     {categories.map(c=><option key={c}>{c}</option>)}
                   </select>
-                </div>
-                <div className="form-group"><label>Supplier</label>
-                  <select value={f.supplier_id} onChange={e=>s("supplier_id",e.target.value)}>
-                    {suppliers.map(sup=><option key={sup.id} value={sup.id}>{sup.name}</option>)}
-                  </select>
-                </div>
               </div>
             </div>
           </div>
           <div className="form-group"><label>Description</label><textarea value={f.description} onChange={e=>s("description",e.target.value)} rows={2}/></div>
-          <div className="form-row-4">
-            <div className="form-group"><label>Cost (J$)</label><input type="number" value={f.cost} onChange={e=>s("cost",e.target.value)}/></div>
-            <div className="form-group"><label>Wholesale Price (J$)</label><input type="number" value={f.wholesale_price} onChange={e=>s("wholesale_price",e.target.value)}/><div className="input-hint" style={{color:margin>0?"var(--success)":"var(--danger)"}}>Margin: {margin}%</div></div>
-            <div className="form-group"><label>Suggested Retail (J$)</label><input type="number" value={f.retail_price} onChange={e=>s("retail_price",e.target.value)}/></div>
+          <div className="form-row-3">
+            <div className="form-group"><label>Wholesale Price (J$)</label><input type="number" value={f.wholesale_price} onChange={e=>s("wholesale_price",e.target.value)}/><div className="input-hint">Customer buying price</div></div>
+            <div className="form-group"><label>Suggested Retail (J$)</label><input type="number" value={f.retail_price} onChange={e=>s("retail_price",e.target.value)}/><div className="input-hint">Recommended sell price</div></div>
             <div className="form-group"><label>Min Order Qty</label><input type="number" value={f.min_order} onChange={e=>s("min_order",e.target.value)}/></div>
           </div>
-          <div className="form-row-3">
-            <div className="form-group"><label>Stock Qty</label><input type="number" value={f.stock} onChange={e=>s("stock",e.target.value)}/></div>
-            <div className="form-group"><label>Low Stock Alert</label><input type="number" value={f.low_stock_threshold} onChange={e=>s("low_stock_threshold",e.target.value)}/></div>
+          <div className="form-row-2">
+            <div className="form-group"><label>Low Stock Alert Threshold</label><input type="number" value={f.low_stock_threshold} onChange={e=>s("low_stock_threshold",e.target.value)}/><div className="input-hint">Alert when stock falls below this</div></div>
             <div className="form-group"><label>Clearance Price (J$)</label><input type="number" value={f.clearance_price} onChange={e=>s("clearance_price",e.target.value)} placeholder="Leave blank if not clearance"/></div>
           </div>
           <div style={{display:"flex",gap:24,marginTop:4}}>
@@ -1799,16 +1809,25 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
     });
     if(!items.length){showToast("No counts entered","err");return;}
     const stId=genId("ST",stockTakes);
+    const stRow = {id:stId, date:today(), status:"completed", notes};
     // Save stock take to Supabase
-    const {data:st} = await supabase.from("stock_takes").insert({id:stId,date:today(),status:"completed",notes}).select().single();
-    if(st){
-      await supabase.from("stock_take_items").insert(items.map(i=>({...i,stock_take_id:stId})));
-      setStockTakes(p=>[{...st,items},...p]);
-    }
-    // Update stock levels in Supabase
+    const {error:stErr} = await supabase.from("stock_takes").insert(stRow);
+    if(stErr){ showToast("Failed to save stock take: "+stErr.message,"err"); return; }
+    await supabase.from("stock_take_items").insert(items.map(i=>({...i,stock_take_id:stId})));
+    // Always update state regardless of DB return value
+    setStockTakes(p=>[{...stRow, items},...p]);
+    // Update stock levels in Supabase + log each change
     for(const [id,c] of Object.entries(counts)){
       if(c==="") continue;
+      const prod = products.find(p=>p.id===id);
+      const variance = +c - (prod?.stock||0);
       await supabase.from("products").update({stock:+c}).eq("id",id);
+      await supabase.from("activity_log").insert({
+        action:"stock_take",
+        details:`Stock take: counted ${c} (was ${prod?.stock||0}, variance ${variance>0?"+":""}${variance}) — ${stId}`,
+        entity_type:"product", entity_id:String(id),
+        user_name:"Admin", timestamp:new Date().toISOString()
+      }).catch(()=>{});
     }
     setProducts(p=>p.map(x=>{const c=counts[x.id];return c!==undefined&&c!==""?{...x,stock:+c}:x;}));
     setCounts({}); setNotes("");
@@ -2344,29 +2363,59 @@ function ClearancePage({ products, isAdmin, addToCart, user }) {
   const items=products.filter(p=>p.is_clearance&&p.active&&(isAdmin||p.stock>0));
   const isConsignment=user?.customer_type==="consignment";
 
+  const inCart=(id)=>{
+    try { const c=JSON.parse(localStorage.getItem("cart")||"{}"); return c[id]?.qty||0; } catch { return 0; }
+  };
+
   return (
     <div>
       <div className="alert alert-warn mb-4">🔥 Clearance items — discounted prices while stock lasts!</div>
       {items.length===0&&<div className="empty"><div className="ei">🔥</div><p>No clearance items currently.</p></div>}
       <div className="prod-grid">
         {items.map(p=>{
-          const discountPct=p.clearance_price?Math.round((1-p.clearance_price/p.wholesale_price)*100):0;
+          const discountPct=p.clearance_price&&p.wholesale_price?Math.round((1-p.clearance_price/p.wholesale_price)*100):0;
+          const price=isConsignment?0:(p.clearance_price||p.wholesale_price);
+          const qty=inCart(p.id);
           return (
             <div key={p.id} className="prod-card">
               <div className="prod-tag"><span className="clearance-badge">CLEARANCE {discountPct>0?`-${discountPct}%`:""}</span></div>
-              <div className="prod-card-img">🏷️</div>
+              <div className="prod-card-img">
+                {p.image_url?<img src={p.image_url} alt={p.name} style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<span style={{fontSize:40}}>🏷️</span>}
+              </div>
               <div className="prod-card-body">
                 <div className="prod-card-brand">{p.brand}</div>
                 <div className="prod-card-name">{p.name}</div>
                 {p.barcode&&<div className="prod-card-sku">Barcode: {p.barcode}</div>}
                 {!isConsignment&&<div className="prod-price-row">
-                  <span className="prod-ws">{fmt(p.clearance_price||p.wholesale_price)}</span>
+                  <span className="prod-ws">{fmt(price)}</span>
                   {p.clearance_price&&<span className="prod-retail">{fmt(p.wholesale_price)}</span>}
                 </div>}
                 <div className="prod-srp">SRP: {fmt(p.retail_price)}</div>
-                <div className="prod-stock">{p.stock} in stock</div>
-                {!isAdmin&&user?.approved&&<button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} disabled={p.stock===0} onClick={()=>addToCart({...p,wholesale_price:isConsignment?0:p.clearance_price||p.wholesale_price},p.min_order)}>Add to Cart</button>}
-                {isConsignment&&<div className="alert alert-info" style={{padding:"6px 10px",fontSize:11,marginTop:8}}>Contact us for pricing</div>}
+                <div className="prod-stock">{p.stock} in stock · Min: {p.min_order||1}{qty>0?` · ${qty} in cart`:""}</div>
+                {!isAdmin&&user?.approved&&<>
+                  <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,marginTop:8}}>
+                    <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
+                    <input
+                      type="number"
+                      min={p.min_order||1}
+                      max={p.stock}
+                      defaultValue={p.min_order||1}
+                      id={`cl-qty-${p.id}`}
+                      style={{width:"70px",textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}
+                      onClick={e=>e.stopPropagation()}
+                    />
+                    <div style={{fontSize:10,color:"var(--text3)"}}>min {p.min_order||1}</div>
+                  </div>
+                  <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} disabled={p.stock===0}
+                    onClick={()=>{
+                      const inp=document.getElementById(`cl-qty-${p.id}`);
+                      const val=Math.max(p.min_order||1, Math.min(p.stock, parseInt(inp?.value)||p.min_order||1));
+                      addToCart({...p, wholesale_price:price}, val);
+                    }}>
+                    {qty>0?"➕ Add More":"Add to Cart"}
+                  </button>
+                  {isConsignment&&<div className="alert alert-info" style={{padding:"6px 10px",fontSize:11,marginTop:8}}>Contact us for pricing</div>}
+                </>}
               </div>
             </div>
           );
@@ -2615,7 +2664,7 @@ function CustomerEditModal({ customer, onSave, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── PURCHASE ORDERS PAGE ────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setProducts, suppliers, settings, showToast }) {
+function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setProducts, suppliers, setSuppliers, settings, showToast }) {
   const [view, setView] = useState("list"); // "list" | "detail"
   const [activePO, setActivePO] = useState(null);
   const [filter, setFilter] = useState("all");
@@ -2635,10 +2684,28 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
   const createPO = async () => {
     if (!newPOForm.supplier_name && !newPOForm.supplier_id) { showToast("Enter a supplier name","err"); return; }
     setCreating(true);
+
+    // If a manual name was typed (no supplier_id selected), auto-create the supplier
+    let supplierId = newPOForm.supplier_id||null;
+    let supplierName = newPOForm.supplier_name||suppliers.find(s=>s.id===supplierId)?.name||"";
+    if (!supplierId && supplierName) {
+      const existing = suppliers.find(s=>s.name?.toLowerCase()===supplierName.toLowerCase());
+      if (existing) {
+        supplierId = existing.id;
+      } else {
+        const {data:newSupp} = await supabase.from("suppliers").insert({name:supplierName}).select().single();
+        if (newSupp) {
+          supplierId = newSupp.id;
+          setSuppliers(prev=>[...prev,newSupp].sort((a,b)=>a.name.localeCompare(b.name)));
+          showToast(`Supplier "${supplierName}" added`);
+        }
+      }
+    }
+
     const id = "PO-" + Date.now();
     const poRow = {
-      id, supplier_id: newPOForm.supplier_id||null,
-      supplier_name: newPOForm.supplier_name||suppliers.find(s=>s.id===newPOForm.supplier_id)?.name||"",
+      id, supplier_id: supplierId,
+      supplier_name: supplierName,
       expected_date: newPOForm.expected_date||null,
       lot_ref: newPOForm.lot_ref||"",
       shipping_cost: parseFloat(newPOForm.shipping_cost)||0,
@@ -3045,7 +3112,6 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
       {/* New product modal */}
       {showNewProd&&<ProductModal
         product={null}
-        suppliers={suppliers}
         categories={[...new Set([...products.map(p=>p.category).filter(Boolean),...(settings?.extra_categories?(() => { try { return JSON.parse(settings.extra_categories); } catch { return []; } })():[]) ])].sort((a,b)=>a.localeCompare(b))}
         onClose={()=>setShowNewProd(false)}
         onSave={async(data)=>{
@@ -3053,7 +3119,15 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
           const dupBarcode = data.barcode&&products.find(p=>p.barcode&&p.barcode===data.barcode);
           if(dupName){ alert(`"${data.name}" already exists — search for it instead.`); return; }
           if(dupBarcode){ alert(`Barcode ${data.barcode} already used by "${dupBarcode.name}".`); return; }
-          const prod = {...data, stock:0, active:false, created_at:new Date().toISOString()};
+          const prod = {
+            name:data.name, barcode:data.barcode||"", brand:data.brand||"",
+            category:data.category||"Uncategorized",
+            wholesale_price:data.wholesale_price||0, retail_price:data.retail_price||0,
+            cost:0, stock:0, low_stock_threshold:data.low_stock_threshold||5,
+            min_order:data.min_order||1, description:data.description||"",
+            image_url:data.image_url||null, is_clearance:false, clearance_price:null,
+            active:false, created_at:new Date().toISOString()
+          };
           const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
           if(error||!saved){ alert("Failed: "+(error?.message||"unknown")); return; }
           setProducts(prev=>[saved,...prev]);
