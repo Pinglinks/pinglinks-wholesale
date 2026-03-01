@@ -2994,21 +2994,16 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
                     </td>
                     <td><code style={{fontSize:11,color:"var(--text3)"}}>{item.barcode||"—"}</code></td>
                     <td style={{textAlign:"center"}}>
-                      {editingItem===item.id
-                        ? <input type="number" min={1} defaultValue={item.ordered_qty}
-                            onBlur={e=>{ updateItemField(item,"ordered_qty",e.target.value); setEditingItem(null); }}
-                            autoFocus style={{width:60,textAlign:"center"}}/>
-                        : <span style={{cursor:"pointer",borderBottom:"1px dashed var(--border)"}} onClick={()=>setEditingItem(item.id)}>{item.ordered_qty}</span>
-                      }
+                      <input type="number" min={1} defaultValue={item.ordered_qty}
+                        onBlur={e=>{ if(+e.target.value!==item.ordered_qty) updateItemField(item,"ordered_qty",e.target.value); }}
+                        style={{width:70,textAlign:"center"}}/>
                     </td>
                     <td style={{textAlign:"center",fontWeight:700,color:fullyReceived?"var(--success)":item.received_qty>0?"var(--warn)":"var(--text3)"}}>{item.received_qty||0}</td>
                     <td style={{textAlign:"center",fontWeight:700,color:remaining>0?"var(--accent)":"var(--success)"}}>{remaining>0?remaining:"✓ Done"}</td>
                     <td style={{textAlign:"right"}}>
-                      <span style={{cursor:"pointer",borderBottom:"1px dashed var(--border)",fontSize:13}}
-                        onClick={()=>{
-                          const v = prompt(`New unit cost for ${item.product_name}:`, item.unit_cost||"0");
-                          if (v!==null) updateItemField(item,"unit_cost",v);
-                        }}>{fmt(item.unit_cost||0)}</span>
+                      <input type="number" min={0} defaultValue={item.unit_cost||0}
+                        onBlur={e=>{ if(+e.target.value!==(item.unit_cost||0)) updateItemField(item,"unit_cost",e.target.value); }}
+                        style={{width:90,textAlign:"right"}}/>
                     </td>
                     <td style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>{fmt((item.ordered_qty||0)*(item.unit_cost||0))}</td>
                     <td>
