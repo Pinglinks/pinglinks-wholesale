@@ -2504,7 +2504,7 @@ function ClearancePage({ products, isAdmin, addToCart, user }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── CUSTOMERS PAGE ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function CustomersPage({ customers, setCustomers, orders, showToast }) {
+function CustomersPage({ customers, setCustomers, orders, salesReps, showToast }) {
   const [tab,setTab]=useState("all");
   const [search,setSearch]=useState("");
   const [editing,setEditing]=useState(null);
@@ -2515,6 +2515,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
     if(tab==="pending"&&c.approved)return false;
     if(tab==="upfront"&&c.customer_type!=="upfront")return false;
     if(tab==="consignment"&&c.customer_type!=="consignment")return false;
+    if(tab==="unassigned"&&(!c.approved||c.sales_rep_id))return false;
     const q=search.toLowerCase();
     if(q&&!c.name.toLowerCase().includes(q)&&!c.company?.toLowerCase().includes(q)&&!c.email?.toLowerCase().includes(q))return false;
     return true;
