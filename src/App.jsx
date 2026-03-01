@@ -10,6 +10,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // ─── LOGO ─────────────────────────────────────────────────────────────────────
 const LOGO_SRC = new URL("./logo.png", import.meta.url).href;
 
+// Set favicon dynamically from logo
+(function() {
+  const link = document.querySelector("link[rel~='icon']") || document.createElement("link");
+  link.rel = "icon";
+  link.type = "image/png";
+  link.href = "data:image/png;base64,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";
+  document.head.appendChild(link);
+})();
+
+
 // ─── DEMO DATA (used when Supabase not yet connected) ─────────────────────────
 const DEMO_CATEGORIES = ["Devices: Phones","Samsung A Series","Airpods","Devices: Tablets","Macbook","USB & AUX Cables","Power Bank","LCD & Touch & Digitizers","Google Pixel","Smart Watch","Gaming","Accessories"];
 
@@ -483,6 +493,7 @@ export default function App() {
   const [customerCarts, setCustomerCarts] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [stores, setStores]     = useState([]);
+  const [salesReps, setSalesReps] = useState([]);
   const [settings, setSettings] = useState({ company_name:"Pinglinks Cellular", company_address:"Kingston, Jamaica", company_phone:"", company_email:"info@pinglinkscellular.com", currency_symbol:"J$", tax_rate:15, invoice_prefix:"INV", transfer_prefix:"TRF" });
   const [cart, setCart]         = useState([]);
   const [showCart, setShowCart] = useState(false);
@@ -519,6 +530,7 @@ export default function App() {
         { data: ordItems },
         { data: supps },
         { data: strs },
+        { data: repsData },
         { data: setts },
         { data: transList },
         { data: transItems },
@@ -536,6 +548,7 @@ export default function App() {
         supabase.from("order_items").select("*"),
         u.role === "admin" ? supabase.from("suppliers").select("*").order("name") : Promise.resolve({data:[]}),
         supabase.from("stores").select("*").order("name"),
+        u.role === "admin" ? supabase.from("sales_reps").select("*").order("name") : supabase.from("sales_reps").select("*").order("name"),
         supabase.from("site_settings").select("*").eq("id",1).single(),
         u.role === "admin" ? supabase.from("transfers").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("transfer_items").select("*") : Promise.resolve({data:[]}),
@@ -549,6 +562,7 @@ export default function App() {
       if (custs) setCustomers(custs);
       if (supps) setSuppliers(supps);
       if (strs) setStores(strs);
+      if (repsData) setSalesReps(repsData);
       if (setts) setSettings(setts);
       if (ords && ordItems) {
         const merged = ords.map(o => ({
@@ -715,6 +729,7 @@ export default function App() {
     ]},
     {section:"Accounts", items:[
       {id:"customers",icon:"👥",label:"Customers"},
+      {id:"salesreps",icon:"🤝",label:"Sales Reps"},
     ]},
     {section:"Reports", items:[
       {id:"analytics",icon:"📈",label:"Analytics"},
@@ -737,7 +752,7 @@ export default function App() {
     {section:"Account", items:[{id:"account",icon:"👤",label:"Account"}]},
   ];
 
-  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders",account:"My Account" };
+  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders",account:"My Account",salesreps:"Sales Reps" };
 
   return (
     <>
@@ -797,15 +812,16 @@ export default function App() {
             {page==="incoming" && <IncomingStockPage purchaseOrders={purchaseOrders} products={products}/>}
             {page==="orders" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
-            {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} showToast={showToast}/>}
+            {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} salesReps={salesReps} showToast={showToast}/>}
             {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
             {page==="activitylog" && <ActivityLogPage activityLog={activityLog} setActivityLog={setActivityLog}/>}
             {page==="settings" && <SettingsPage settings={settings} setSettings={setSettings} showToast={showToast}/>}
             {page==="stores" && <StoresPage stores={stores} setStores={setStores} showToast={showToast}/>}
+            {page==="salesreps" && <SalesRepsPage salesReps={salesReps} setSalesReps={setSalesReps} showToast={showToast}/>}
             {page==="catalog" && <CatalogPage products={products} user={user} addToCart={addToCart} cart={cart} settings={settings}/>}
             {page==="my-orders" && <MyOrdersPage orders={orders.filter(o=>o.customer_id===user.id)} settings={settings} customers={customers} setModal={setModal} user={user}/>}
-            {page==="account" && <AccountPage user={user} customers={customers} showToast={showToast} isAdmin={isAdmin}/>}
+            {page==="account" && <AccountPage user={user} customers={customers} salesReps={salesReps} showToast={showToast} isAdmin={isAdmin}/>}
           </div>
         </div>
 
@@ -842,9 +858,14 @@ function LoginPage({ onLogin }) {
   const [err,setErr]=useState("");
   const [success,setSuccess]=useState("");
   const [busy,setBusy]=useState(false);
-  const [reg,setReg]=useState({name:"",company:"",taxId:"",email:"",password:"",confirm:""});
+  const [reg,setReg]=useState({name:"",company:"",taxId:"",email:"",password:"",confirm:"",salesRepId:""});
   const [showForgot,setShowForgot]=useState(false);
   const [forgotEmail,setForgotEmail]=useState("");
+  const [repsList,setRepsList]=useState([]);
+
+  useEffect(()=>{
+    supabase.from("sales_reps").select("*").order("name").then(({data})=>{ if(data) setRepsList(data); });
+  },[]);
 
   const doLogin = async () => {
     setErr(""); setBusy(true);
@@ -875,7 +896,7 @@ function LoginPage({ onLogin }) {
     if (reg.password.length < 6) { setErr("Password must be at least 6 characters."); setBusy(false); return; }
     const { error } = await supabase.auth.signUp({
       email: reg.email, password: reg.password,
-      options: { data: { name: reg.name, company: reg.company, tax_id: reg.taxId, role: "buyer" } }
+      options: { data: { name: reg.name, company: reg.company, tax_id: reg.taxId, role: "buyer", sales_rep_id: reg.salesRepId||null } }
     });
     if (error) { setErr(error.message); setBusy(false); return; }
     // Send email notification
@@ -926,6 +947,12 @@ function LoginPage({ onLogin }) {
             </div>
             <div className="form-group"><label>Business TRN / Tax ID</label><input value={reg.taxId} onChange={e=>setReg(p=>({...p,taxId:e.target.value}))}/></div>
             <div className="form-group"><label>Email</label><input type="email" value={reg.email} onChange={e=>setReg(p=>({...p,email:e.target.value}))}/></div>
+            <div className="form-group"><label>Do you know a member of our team? (Optional)</label>
+              <select value={reg.salesRepId||""} onChange={e=>setReg(p=>({...p,salesRepId:e.target.value}))}>
+                <option value="">— I don't know anyone from your team —</option>
+                {repsList.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
             <div className="form-row">
               <div className="form-group"><label>Password</label><input type="password" value={reg.password} onChange={e=>setReg(p=>({...p,password:e.target.value}))}/></div>
               <div className="form-group"><label>Confirm</label><input type="password" value={reg.confirm} onChange={e=>setReg(p=>({...p,confirm:e.target.value}))}/></div>
@@ -1309,6 +1336,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                         {p.is_new_arrival&&<span className="badge bg" style={{fontSize:9}}>NEW</span>}
                         {p.is_clearance&&<span className="badge bo" style={{fontSize:9}}>CLEARANCE</span>}
                         {!p.active&&<span className="badge br" style={{fontSize:9}}>ARCHIVED</span>}
+                        {p.wholesale_visible===false&&<span className="badge" style={{fontSize:9,background:"var(--warn)22",color:"var(--warn)"}}>HIDDEN</span>}
                       </div>
                     </td>
                     <td>
@@ -1343,7 +1371,8 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       low_stock_threshold:data.low_stock_threshold||5, min_order:data.min_order||1,
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false,
-      clearance_price:data.clearance_price||null
+      clearance_price:data.clearance_price||null,
+      wholesale_visible:data.wholesale_visible!==false
     };
     // Duplicate barcode check — exclude this product from check
     if(payload.barcode){
@@ -1369,6 +1398,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       low_stock_threshold:data.low_stock_threshold||5, min_order:data.min_order||1,
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false, clearance_price:data.clearance_price||null,
+      wholesale_visible:data.wholesale_visible!==false,
       active:true, created_at:new Date().toISOString()
     };
     const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
@@ -1498,7 +1528,8 @@ function ProductModal({ product, categories, onSave, onClose }) {
     wholesale_price:product?.wholesale_price||"", retail_price:product?.retail_price||"",
     low_stock_threshold:product?.low_stock_threshold||5, min_order:product?.min_order||1,
     description:product?.description||"", image_url:product?.image_url||"",
-    is_clearance:product?.is_clearance||false, clearance_price:product?.clearance_price||""
+    is_clearance:product?.is_clearance||false, clearance_price:product?.clearance_price||"",
+    wholesale_visible:product?.wholesale_visible!==false  // default true
   });
   const [uploading, setUploading] = useState(false);
   const imgRef = useRef();
@@ -1575,8 +1606,14 @@ function ProductModal({ product, categories, onSave, onClose }) {
             <div className="form-group"><label>Low Stock Alert Threshold</label><input type="number" value={f.low_stock_threshold} onChange={e=>s("low_stock_threshold",e.target.value)}/><div className="input-hint">Alert when stock falls below this</div></div>
             <div className="form-group"><label>Clearance Price (J$)</label><input type="number" value={f.clearance_price} onChange={e=>s("clearance_price",e.target.value)} placeholder="Leave blank if not clearance"/></div>
           </div>
-          <div style={{display:"flex",gap:24,marginTop:4}}>
+          <div style={{display:"flex",gap:24,marginTop:4,flexWrap:"wrap"}}>
             <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> Mark as Clearance</label>
+            <label className="checkbox-row" title="Uncheck to hide this product from customer catalog, clearance, and arriving soon pages">
+              <input type="checkbox" checked={f.wholesale_visible} onChange={e=>s("wholesale_visible",e.target.checked)}/>
+              {f.wholesale_visible
+                ? <span>Visible to Customers</span>
+                : <span style={{color:"var(--warn)",fontWeight:600}}>⚠️ Hidden from Customers</span>}
+            </label>
           </div>
         </div>
         <div className="modal-foot">
@@ -1591,7 +1628,8 @@ function ProductModal({ product, categories, onSave, onClose }) {
               stock:parseInt(f.stock)||0,
               low_stock_threshold:parseInt(f.low_stock_threshold)||5,
               min_order:parseInt(f.min_order)||1,
-              clearance_price:f.clearance_price&&String(f.clearance_price).trim()!==""?parseFloat(f.clearance_price):null
+              clearance_price:f.clearance_price&&String(f.clearance_price).trim()!==""?parseFloat(f.clearance_price):null,
+              wholesale_visible:f.wholesale_visible!==false
             });
           }}>{uploading?"Uploading…":"Save Product"}</button>
         </div>
@@ -2398,7 +2436,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
 // ─── CLEARANCE PAGE ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function ClearancePage({ products, isAdmin, addToCart, user }) {
-  const items=products.filter(p=>p.is_clearance&&p.active&&(isAdmin||p.stock>0));
+  const items=products.filter(p=>p.is_clearance&&p.active&&(isAdmin||p.stock>0)&&(isAdmin||p.wholesale_visible!==false));
   const isConsignment=user?.customer_type==="consignment";
 
   const inCart=(id)=>{
@@ -2429,7 +2467,7 @@ function ClearancePage({ products, isAdmin, addToCart, user }) {
                   {p.clearance_price&&<span className="prod-retail">{fmt(p.wholesale_price)}</span>}
                 </div>}
                 <div className="prod-srp">SRP: {fmt(p.retail_price)}</div>
-                <div className="prod-stock">{p.stock} in stock · Min: {p.min_order||1}{qty>0?` · ${qty} in cart`:""}</div>
+                <div className="prod-stock">{p.stock} in stock · MOQ: {p.min_order||1}{qty>0?` · ${qty} in cart`:""}</div>
                 {!isAdmin&&user?.approved&&<>
                   <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,marginTop:8}}>
                     <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
@@ -2442,7 +2480,7 @@ function ClearancePage({ products, isAdmin, addToCart, user }) {
                       style={{width:"70px",textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}
                       onClick={e=>e.stopPropagation()}
                     />
-                    <div style={{fontSize:10,color:"var(--text3)"}}>min {p.min_order||1}</div>
+                    <div style={{fontSize:10,color:"var(--text3)"}}>MOQ: {p.min_order||1}</div>
                   </div>
                   <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} disabled={p.stock===0}
                     onClick={()=>{
@@ -2535,7 +2573,8 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
     await new Promise(r=>setTimeout(r,1000)); // wait for trigger
     await supabase.from("profiles").update({
       approved: true, customer_type: data.customer_type||"upfront",
-      discount_pct: data.discount_pct||0, min_order_value: data.min_order_value||0
+      discount_pct: data.discount_pct||0, min_order_value: data.min_order_value||0,
+      sales_rep_id: data.sales_rep_id||null
     }).eq("email", data.email);
     // Reload customers
     const { data: custs } = await supabase.from("profiles").select("*").eq("role","buyer").order("created_at",{ascending:false});
@@ -2555,7 +2594,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
   return (
     <>
       <div className="tabs">
-        {[["all","All"],["pending","Pending"],["upfront","Upfront Buyers"],["consignment","Consignment"]].map(([v,l])=>(
+        {[["all","All"],["pending","Pending"],["upfront","Upfront Buyers"],["consignment","Consignment"],["unassigned","No Rep"]].map(([v,l])=>(
           <button key={v} className={`tab ${tab===v?"active":""}`} onClick={()=>setTab(v)}>{l} {v==="pending"&&customers.filter(c=>!c.approved).length>0?`(${customers.filter(c=>!c.approved).length})`:""}</button>
         ))}
       </div>
@@ -2566,7 +2605,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
       <div className="card">
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Company</th><th>Contact</th><th>TRN</th><th>Type</th><th>Discount</th><th>Min Order</th><th>Applied</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Company</th><th>Contact</th><th>TRN</th><th>Type</th><th>Discount</th><th>Min Order</th><th>Sales Rep</th><th>Applied</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>{filtered.map(c=>{
               const custOrders=orders.filter(o=>o.customer_id===c.id);
               return (
@@ -2577,6 +2616,7 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
                   <td>{c.customer_type?<span className={`badge ${c.customer_type==="consignment"?"bo":"bb"}`}>{c.customer_type}</span>:<span className="badge bgr">—</span>}</td>
                   <td style={{fontSize:12}}>{c.discount_pct||0}%</td>
                   <td style={{fontSize:12}}>{c.min_order_value?fmt(c.min_order_value):"None"}</td>
+                  <td style={{fontSize:11}}>{(()=>{ const r=(salesReps||[]).find(x=>x.id===c.sales_rep_id); return r?<span style={{color:"var(--accent)",fontWeight:600}}>{r.name}</span>:<span style={{color:"var(--text3)"}}>—</span>; })()}</td>
                   <td style={{fontSize:11,color:"var(--text2)"}}>{c.created_at}</td>
                   <td>{c.approved?<span className="badge bg">✓ Active</span>:<span className="badge bw">⏳ Pending</span>}</td>
                   <td><div className="tbl-actions">
@@ -2593,19 +2633,19 @@ function CustomersPage({ customers, setCustomers, orders, showToast }) {
                 </tr>
               );
             })}
-            {filtered.length===0&&<tr><td colSpan={9} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No customers found.</td></tr>}
+            {filtered.length===0&&<tr><td colSpan={10} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No customers found.</td></tr>}
             </tbody>
           </table>
         </div>
       </div>
-      {showModal&&editing&&<CustomerEditModal customer={editing} onSave={saveCustomer} onClose={()=>setShowModal(false)}/>}
-      {showCreateModal&&<CreateCustomerModal onSave={createCustomer} onClose={()=>setShowCreateModal(false)}/>}
+      {showModal&&editing&&<CustomerEditModal customer={editing} onSave={saveCustomer} onClose={()=>setShowModal(false)} salesReps={salesReps}/>}
+      {showCreateModal&&<CreateCustomerModal onSave={createCustomer} onClose={()=>setShowCreateModal(false)} salesReps={salesReps}/>}
     </>
   );
 }
 
-function CreateCustomerModal({ onSave, onClose }) {
-  const [f,setF]=useState({name:"",company:"",email:"",password:"",tax_id:"",customer_type:"upfront",discount_pct:0,min_order_value:0});
+function CreateCustomerModal({ onSave, onClose, salesReps }) {
+  const [f,setF]=useState({name:"",company:"",email:"",password:"",tax_id:"",customer_type:"upfront",discount_pct:0,min_order_value:0,sales_rep_id:""});
   const [busy,setBusy]=useState(false);
   const genPwd=()=>{ const p=Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,6).toUpperCase()+"!1"; setF(x=>({...x,password:p})); };
   return (
@@ -2639,6 +2679,12 @@ function CreateCustomerModal({ onSave, onClose }) {
             <div className="form-group"><label>Discount %</label><input type="number" min={0} max={100} value={f.discount_pct} onChange={e=>setF(p=>({...p,discount_pct:+e.target.value}))}/></div>
           </div>
           <div className="form-group"><label>Min Order Value (J$)</label><input type="number" min={0} value={f.min_order_value} onChange={e=>setF(p=>({...p,min_order_value:+e.target.value}))}/></div>
+          <div className="form-group"><label>Sales Rep</label>
+            <select value={f.sales_rep_id} onChange={e=>setF(p=>({...p,sales_rep_id:e.target.value}))}>
+              <option value="">— No sales rep assigned —</option>
+              {(salesReps||[]).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          </div>
           {f.password&&<div className="alert alert-ok" style={{fontSize:12}}>📋 Login details to share:<br/><strong>Email:</strong> {f.email}<br/><strong>Password:</strong> {f.password}</div>}
         </div>
         <div className="modal-foot">
@@ -2650,12 +2696,12 @@ function CreateCustomerModal({ onSave, onClose }) {
   );
 }
 
-function CustomerEditModal({ customer, onSave, onClose }) {
+function CustomerEditModal({ customer, onSave, onClose, salesReps }) {
   const [f,setF]=useState({
     name:customer.name||"", company:customer.company||"", email:customer.email||"",
     tax_id:customer.tax_id||"", customer_type:customer.customer_type||"upfront",
     discount_pct:customer.discount_pct||0, min_order_value:customer.min_order_value||0,
-    approved:customer.approved||false
+    approved:customer.approved||false, sales_rep_id:customer.sales_rep_id||""
   });
   return (
     <div className="overlay"><div className="modal modal-md">
@@ -2678,6 +2724,12 @@ function CustomerEditModal({ customer, onSave, onClose }) {
           </div>
           <div className="form-group"><label>Discount %</label><input type="number" min={0} max={100} value={f.discount_pct} onChange={e=>setF(p=>({...p,discount_pct:+e.target.value}))}/></div>
           <div className="form-group"><label>Min Order Value (J$)</label><input type="number" min={0} value={f.min_order_value} onChange={e=>setF(p=>({...p,min_order_value:+e.target.value}))}/></div>
+        </div>
+        <div className="form-group" style={{marginTop:8}}><label>Sales Rep</label>
+          <select value={f.sales_rep_id} onChange={e=>setF(p=>({...p,sales_rep_id:e.target.value}))}>
+            <option value="">— No sales rep assigned —</option>
+            {(salesReps||[]).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
         </div>
         <label className="checkbox-row" style={{marginTop:8}}>
           <input type="checkbox" checked={f.approved} onChange={e=>setF(p=>({...p,approved:e.target.checked}))}/>
@@ -3910,6 +3962,85 @@ function SettingsPage({ settings, setSettings, showToast }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── STORES PAGE ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── SALES REPS PAGE ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function SalesRepsPage({ salesReps, setSalesReps, showToast }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [editId, setEditId] = useState(null);
+
+  const startEdit = (r) => { setEditId(r.id); setName(r.name); setPhone(r.phone||""); setEmail(r.email||""); };
+  const cancelEdit = () => { setEditId(null); setName(""); setPhone(""); setEmail(""); };
+
+  const save = async () => {
+    if (!name.trim()) { showToast("Name is required","err"); return; }
+    setBusy(true);
+    if (editId) {
+      const { error } = await supabase.from("sales_reps").update({ name:name.trim(), phone:phone.trim(), email:email.trim() }).eq("id", editId);
+      if (error) { showToast("Failed to update","err"); setBusy(false); return; }
+      setSalesReps(prev => prev.map(r => r.id===editId ? {...r,name:name.trim(),phone:phone.trim(),email:email.trim()} : r));
+      showToast("Sales rep updated");
+      cancelEdit();
+    } else {
+      const { data, error } = await supabase.from("sales_reps").insert({ name:name.trim(), phone:phone.trim(), email:email.trim() }).select().single();
+      if (error || !data) { showToast("Failed to add","err"); setBusy(false); return; }
+      setSalesReps(prev => [...prev, data]);
+      showToast("Sales rep added");
+      setName(""); setPhone(""); setEmail("");
+    }
+    setBusy(false);
+  };
+
+  const remove = async (id, repName) => {
+    if (!confirm(\`Remove \${repName} from the sales reps list?\`)) return;
+    await supabase.from("sales_reps").delete().eq("id", id);
+    setSalesReps(prev => prev.filter(r => r.id !== id));
+    showToast("Removed");
+  };
+
+  return (
+    <div style={{maxWidth:680}}>
+      <div className="card" style={{marginBottom:20}}>
+        <div className="card-header"><h3>🤝 {editId ? "Edit Sales Rep" : "Add Sales Rep"}</h3></div>
+        <div className="card-body">
+          <div className="form-row">
+            <div className="form-group"><label>Full Name *</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Marcus Brown"/></div>
+            <div className="form-group"><label>Phone</label><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="Optional"/></div>
+          </div>
+          <div className="form-group"><label>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Optional"/></div>
+          <div style={{display:"flex",gap:8,marginTop:4}}>
+            <button className="btn btn-primary" onClick={save} disabled={busy||!name.trim()}>{busy?"Saving…":editId?"Save Changes":"Add Sales Rep"}</button>
+            {editId && <button className="btn btn-ghost" onClick={cancelEdit}>Cancel</button>}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><h3>Team ({salesReps.length})</h3></div>
+        {salesReps.length===0
+          ? <div className="empty"><div className="ei">🤝</div><h3>No sales reps yet</h3><p>Add your first team member above.</p></div>
+          : <div className="tbl-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Actions</th></tr></thead>
+              <tbody>{salesReps.map(r=>(
+                <tr key={r.id}>
+                  <td style={{fontWeight:600}}>{r.name}</td>
+                  <td style={{color:"var(--text2)"}}>{r.phone||"—"}</td>
+                  <td style={{color:"var(--text2)"}}>{r.email||"—"}</td>
+                  <td><div className="tbl-actions">
+                    <button className="btn btn-secondary btn-xs" onClick={()=>startEdit(r)}>Edit</button>
+                    <button className="btn btn-danger btn-xs" onClick={()=>remove(r.id,r.name)}>Remove</button>
+                  </div></td>
+                </tr>
+              ))}</tbody>
+            </table></div>}
+      </div>
+    </div>
+  );
+}
+
 function StoresPage({ stores, setStores, showToast }) {
   const [show,setShow]=useState(false);
   const [editing,setEditing]=useState(null);
@@ -4056,7 +4187,7 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
                   </div>
                   <div className="prod-srp">SRP: {fmt(p.retail_price)} · Save {savingPct}%</div>
                 </>}
-                <div className="prod-stock">{p.stock} in stock · Min: {p.min_order}{qty>0?` · ${qty} in cart`:""}</div>
+                <div className="prod-stock">{p.stock} in stock · MOQ: {p.min_order}{qty>0?` · ${qty} in cart`:""}</div>
                 <div style={{fontSize:11,color:"var(--text2)",marginBottom:10,lineHeight:1.4}}>{p.description}</div>
                 <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
                   <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
@@ -4069,7 +4200,7 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
                     style={{width:"70px",textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}
                     onClick={e=>e.stopPropagation()}
                   />
-                  <div style={{fontSize:10,color:"var(--text3)"}}>min {p.min_order||1}</div>
+                  <div style={{fontSize:10,color:"var(--text3)"}}>MOQ: {p.min_order||1}</div>
                 </div>
                 <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} onClick={()=>{
                   const inp=document.getElementById(`qty-${p.id}`);
@@ -4132,8 +4263,9 @@ function MyOrdersPage({ orders, settings, customers, setModal, user }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── ACCOUNT PAGE (BUYER) ─────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function AccountPage({ user, customers, showToast, isAdmin }) {
+function AccountPage({ user, customers, salesReps, showToast, isAdmin }) {
   const c=customers.find(x=>x.id===user.id)||user;
+  const salesRep = (salesReps||[]).find(r=>r.id===c.sales_rep_id);
   const [showPwd,setShowPwd]=useState(false);
   const [pwd,setPwd]=useState({current:"",newPwd:"",confirm:""});
   const [busy,setBusy]=useState(false);
@@ -4176,6 +4308,18 @@ function AccountPage({ user, customers, showToast, isAdmin }) {
               <div className="form-group"><label>Discount</label><input value={`${c.discount_pct||0}%`} readOnly/></div>
             </div>
             <div className="form-group"><label>Tax ID / TRN</label><input value={c.tax_id||""} readOnly/></div>
+            <div className="form-group"><label>Your Sales Rep</label>
+              {salesRep
+                ? <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"var(--bg3)",borderRadius:8}}>
+                    <div style={{width:36,height:36,borderRadius:"50%",background:"var(--accent)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:14,flexShrink:0}}>{salesRep.name[0]}</div>
+                    <div>
+                      <div style={{fontWeight:600,fontSize:13}}>{salesRep.name}</div>
+                      {salesRep.phone&&<div style={{fontSize:11,color:"var(--text2)"}}>{salesRep.phone}</div>}
+                      {salesRep.email&&<div style={{fontSize:11,color:"var(--text2)"}}>{salesRep.email}</div>}
+                    </div>
+                  </div>
+                : <div style={{padding:"10px 12px",background:"var(--bg3)",borderRadius:8,fontSize:12,color:"var(--text3)"}}>No sales rep assigned yet — contact us if you were referred by a team member.</div>}
+            </div>
           </>}
         </div>
       </div>
