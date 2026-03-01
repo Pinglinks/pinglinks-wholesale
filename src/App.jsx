@@ -2340,16 +2340,6 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
   const [filterDate, setFilterDate] = useState("");
   const [shipModal, setShipModal] = useState(null);
 
-  const finalizeOrder = async (order) => {
-    if (!confirm(`Convert ${order.id} to an Invoice? This cannot be undone.`)) return;
-    await supabase.from("orders").update({ status: "invoiced" }).eq("id", order.id);
-    setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: "invoiced"} : o));
-    // Mark any open backorders for this order as fulfilled
-    await supabase.from("backorders").update({ status: "fulfilled" }).eq("order_id", order.id).eq("status", "open");
-    setBackorders(prev => prev.map(b => b.order_id === order.id && b.status === "open" ? {...b, status: "fulfilled"} : b));
-    showToast(`${order.id} converted to Invoice ✓`);
-  };
-
   const activeOrders = useMemo(() => orders.filter(o => {
     if (o.status !== "order" && o.status !== "partial_shipped") return false;
     if (filterDate && !o.date?.startsWith(filterDate)) return false;
@@ -2396,7 +2386,6 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
                 <td><StatusBadge status={o.status}/></td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>🚚 Ship</button>
-                  <button className="btn btn-success btn-xs" onClick={()=>finalizeOrder(o)} style={{background:"var(--success)",color:"#fff",border:"none"}}>✓ Complete</button>
                 </div></td>
               </tr>
             ))}
@@ -2595,15 +2584,6 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
   const [search, setSearch] = useState("");
   const [shipModal, setShipModal] = useState(null); // { order, backorderRecord }
 
-  const finalizeOrder = async (order) => {
-    if (!confirm(`Convert ${order.id} to an Invoice? All remaining backorders will be marked fulfilled.`)) return;
-    await supabase.from("orders").update({ status: "invoiced" }).eq("id", order.id);
-    setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: "invoiced"} : o));
-    await supabase.from("backorders").update({ status: "fulfilled" }).eq("order_id", order.id).eq("status", "open");
-    setBackorders(prev => prev.map(b => b.order_id === order.id && b.status === "open" ? {...b, status: "fulfilled"} : b));
-    showToast(`${order.id} converted to Invoice ✓`);
-  };
-
   const openBackorders = useMemo(() => backorders.filter(b => {
     if (b.status !== "open") return false;
     const q = search.toLowerCase();
@@ -2643,10 +2623,7 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                 <div style={{fontFamily:"Syne",fontWeight:700}}>{orderId}</div>
                 <div style={{fontSize:11,color:"var(--text2)",marginTop:2}}>{order?.customer_name} · Ordered {order?.date}</div>
               </div>
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <StatusBadge status={order?.status||"partial_shipped"}/>
-                {order && <button className="btn btn-xs" onClick={()=>finalizeOrder(order)} style={{background:"var(--success)",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✓ Complete → Invoice</button>}
-              </div>
+              <StatusBadge status={order?.status||"partial_shipped"}/>
             </div>
             <div className="card-body" style={{padding:0}}>
               <div className="tbl-wrap">
@@ -4829,8 +4806,8 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
   const exportCSV=()=>{
     const rows=[
       ["Invoice",order.id],["Customer",order.customer_name],["Date",order.date],["Status",order.status],["Payment",order.payment_method||"—"],[""],
-      ["Product","Barcode","Qty","Unit Price","Total"],
-      ...(order.items||[]).map(i=>[i.name,i.barcode||"—",i.qty,i.unit_price,i.qty*i.unit_price]),
+      ["Product","Barcode","Ordered","Shipped","Backordered","Unit Price","Total"],
+      ...(order.items||[]).map(i=>{const s=i.qty_shipped??i.qty; return [i.name,i.barcode||"—",i.qty,s,i.qty-s,i.unit_price,s*i.unit_price];}),
       [""],["Subtotal","",""," ",order.subtotal],[`GCT (${order.tax_rate}%)`,""," ","",order.tax_amount],["Total","","","",order.total]
     ];
     downloadCSV(rows,`${order.id}.csv`);
@@ -4864,16 +4841,33 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
 
         <div className="tbl-wrap" style={{marginBottom:16}}>
           <table>
-            <thead><tr><th>Barcode</th><th>Product</th><th>Qty</th>{!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}</tr></thead>
-            <tbody>{(order.items||[]).map((item,i)=>(
+            <thead><tr>
+              <th>Barcode</th>
+              <th>Product</th>
+              <th style={{textAlign:"center"}}>Ordered</th>
+              <th style={{textAlign:"center"}}>Shipped</th>
+              <th style={{textAlign:"center"}}>Backordered</th>
+              {!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}
+              {!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}
+            </tr></thead>
+            <tbody>{(order.items||[]).map((item,i)=>{
+              const shipped = item.qty_shipped ?? item.qty;
+              const backordered = item.qty - shipped;
+              return (
               <tr key={i}>
                 <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
                 <td style={{fontWeight:500}}>{item.name}</td>
-                <td>{item.qty}</td>
+                <td style={{textAlign:"center"}}>{item.qty}</td>
+                <td style={{textAlign:"center",color:"var(--success)",fontWeight:600}}>{shipped}</td>
+                <td style={{textAlign:"center"}}>
+                  {backordered > 0
+                    ? <span style={{color:"var(--warn)",fontWeight:600}}>{backordered}</span>
+                    : <span style={{color:"var(--text3)"}}>—</span>}
+                </td>
                 {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
-                {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(item.qty*item.unit_price)}</td>}
+                {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(shipped*item.unit_price)}</td>}
               </tr>
-            ))}</tbody>
+            )})}</tbody>
           </table>
         </div>
 
