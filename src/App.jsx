@@ -215,7 +215,8 @@ textarea{resize:vertical;min-height:70px}
 .prod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
 .prod-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;transition:border-color .2s,transform .2s;position:relative}
 .prod-card:hover{border-color:rgba(0,212,168,.4);transform:translateY(-2px)}
-.prod-card-img{height:100px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:44px;border-bottom:1px solid var(--border)}
+.prod-card-img{height:200px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:44px;border-bottom:1px solid var(--border);overflow:hidden}
+.prod-card-img img{width:100%;height:100%;object-fit:cover;object-position:center}
 .prod-card-body{padding:14px}
 .prod-card-brand{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text3);margin-bottom:3px}
 .prod-card-name{font-weight:600;font-size:13px;line-height:1.3;margin-bottom:3px}
@@ -538,8 +539,8 @@ export default function App() {
         supabase.from("site_settings").select("*").eq("id",1).single(),
         u.role === "admin" ? supabase.from("transfers").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("transfer_items").select("*") : Promise.resolve({data:[]}),
-        u.role === "admin" ? supabase.from("purchase_orders").select("*").order("created_at",{ascending:false}) : Promise.resolve({data:[]}),
-        u.role === "admin" ? supabase.from("purchase_order_items").select("*") : Promise.resolve({data:[]}),
+        u.role === "admin" ? supabase.from("purchase_orders").select("*").order("created_at",{ascending:false}) : supabase.from("purchase_orders").select("*").in("status",["open","partial"]).order("created_at",{ascending:false}),
+        u.role === "admin" ? supabase.from("purchase_order_items").select("*") : supabase.from("purchase_order_items").select("*"),
         u.role === "admin" ? supabase.from("customer_carts").select("*").order("updated_at",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("stock_takes").select("*").order("date",{ascending:false}) : Promise.resolve({data:[]}),
         u.role === "admin" ? supabase.from("stock_take_items").select("*") : Promise.resolve({data:[]}),
