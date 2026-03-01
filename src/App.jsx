@@ -2340,6 +2340,15 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
   const [filterDate, setFilterDate] = useState("");
   const [shipModal, setShipModal] = useState(null);
 
+  const finalizeOrder = async (order) => {
+    if (!confirm(`Convert ${order.id} to an Invoice? This cannot be undone.`)) return;
+    await supabase.from("orders").update({ status: "invoiced" }).eq("id", order.id);
+    setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: "invoiced"} : o));
+    await supabase.from("backorders").update({ status: "fulfilled" }).eq("order_id", order.id).eq("status", "open");
+    setBackorders(prev => prev.map(b => b.order_id === order.id && b.status === "open" ? {...b, status: "fulfilled"} : b));
+    showToast(`${order.id} converted to Invoice ✓`);
+  };
+
   const activeOrders = useMemo(() => orders.filter(o => {
     if (o.status !== "order" && o.status !== "partial_shipped") return false;
     if (filterDate && !o.date?.startsWith(filterDate)) return false;
@@ -2386,6 +2395,7 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
                 <td><StatusBadge status={o.status}/></td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>🚚 Ship</button>
+                  <button className="btn btn-xs" onClick={()=>finalizeOrder(o)} style={{background:"var(--success)",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✓ Complete</button>
                 </div></td>
               </tr>
             ))}
@@ -2457,6 +2467,11 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
             await supabase.from("products").update({ stock: newStock }).eq("id", item.product_id);
             setProducts(prev => prev.map(p => p.id === item.product_id ? {...p, stock: newStock} : p));
           }
+          // Record shipped qty on order_items so invoice shows correct qty
+          await supabase.from("order_items")
+            .update({ qty_shipped: toShip })
+            .eq("order_id", order.id)
+            .eq("product_id", item.product_id);
           shippedItems.push({ ...item, qty_shipped: toShip });
         }
 
@@ -2488,19 +2503,24 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
         setBackorders(prev => prev.map(b => b.id === backorderRecord.id ? {...b, status:"fulfilled", qty_shipped: backorderRecord.qty_ordered} : b));
       }
 
-      // Check if all backorders for this order are now fulfilled
-      const allBackorders = await supabase.from("backorders").select("*").eq("order_id", order.id).eq("status","open");
-      const remainingOpen = (allBackorders.data || []).filter(b => !isBackorder || b.id !== backorderRecord?.id);
+      // Determine new order status
+      let newOrderStatus = order.status;
+      let fullyComplete = false;
 
-      const fullyComplete = newBackorders.length === 0 && remainingOpen.length === 0;
-
-      let newOrderStatus;
-      if (fullyComplete) {
-        newOrderStatus = "invoiced";
-      } else if (shippedItems.length > 0) {
+      if (newBackorders.length > 0) {
+        // Created backorders this run — partial
         newOrderStatus = "partial_shipped";
-      } else {
-        newOrderStatus = order.status;
+      } else if (isBackorder) {
+        // Fulfilling a backorder — check if any other open backorders remain
+        const { data: remaining } = await supabase
+          .from("backorders").select("id").eq("order_id", order.id).eq("status","open")
+          .neq("id", backorderRecord.id);
+        fullyComplete = !remaining || remaining.length === 0;
+        newOrderStatus = fullyComplete ? "invoiced" : "partial_shipped";
+      } else if (shippedItems.length > 0) {
+        // First ship, no backorders — fully shipped
+        fullyComplete = true;
+        newOrderStatus = "invoiced";
       }
 
       await supabase.from("orders").update({ status: newOrderStatus }).eq("id", order.id);
@@ -2584,6 +2604,15 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
   const [search, setSearch] = useState("");
   const [shipModal, setShipModal] = useState(null); // { order, backorderRecord }
 
+  const finalizeOrder = async (order) => {
+    if (!confirm(`Convert ${order.id} to an Invoice? All remaining backorders will be marked fulfilled.`)) return;
+    await supabase.from("orders").update({ status: "invoiced" }).eq("id", order.id);
+    setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: "invoiced"} : o));
+    await supabase.from("backorders").update({ status: "fulfilled" }).eq("order_id", order.id).eq("status", "open");
+    setBackorders(prev => prev.map(b => b.order_id === order.id && b.status === "open" ? {...b, status: "fulfilled"} : b));
+    showToast(`${order.id} converted to Invoice ✓`);
+  };
+
   const openBackorders = useMemo(() => backorders.filter(b => {
     if (b.status !== "open") return false;
     const q = search.toLowerCase();
@@ -2623,7 +2652,10 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                 <div style={{fontFamily:"Syne",fontWeight:700}}>{orderId}</div>
                 <div style={{fontSize:11,color:"var(--text2)",marginTop:2}}>{order?.customer_name} · Ordered {order?.date}</div>
               </div>
-              <StatusBadge status={order?.status||"partial_shipped"}/>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <StatusBadge status={order?.status||"partial_shipped"}/>
+                {order && <button className="btn btn-xs" onClick={()=>finalizeOrder(order)} style={{background:"var(--success)",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✓ Complete → Invoice</button>}
+              </div>
             </div>
             <div className="card-body" style={{padding:0}}>
               <div className="tbl-wrap">
@@ -4776,6 +4808,7 @@ function CartModal({ cart, updateQty, subtotal, tax, total, taxRate, user, onClo
 // ─────────────────────────────────────────────────────────────────────────────
 function OrderSuccessModal({ order, settings, customers, onClose }) {
   const customer=customers.find(c=>c.id===order.customer_id);
+  const isConsignment = order.type==="consignment" || customer?.customer_type==="consignment";
   return (
     <div className="overlay"><div className="modal modal-sm">
       <div className="modal-body" style={{textAlign:"center",padding:"36px 28px"}}>
@@ -4785,9 +4818,8 @@ function OrderSuccessModal({ order, settings, customers, onClose }) {
         <div style={{background:"var(--bg3)",borderRadius:10,padding:"14px 18px",marginBottom:18,textAlign:"left"}}>
           <div style={{fontSize:11,color:"var(--text3)",marginBottom:3}}>ORDER #</div>
           <div style={{fontFamily:"Syne",fontWeight:700,fontSize:18}}>{order.id}</div>
-          <div style={{marginTop:6,fontSize:13,color:"var(--text2)"}}>Total: <strong style={{color:"var(--accent)"}}>{fmt(order.total)}</strong></div>
-          <div style={{fontSize:12,color:"var(--text2)"}}>GCT ({order.tax_rate}%): {fmt(order.tax_amount)}</div>
-          {order.type==="consignment"&&order.consignment_due&&<div style={{marginTop:4,fontSize:12,color:"var(--warn)"}}>Consignment due: {order.consignment_due}</div>}
+          {!isConsignment&&<div style={{marginTop:6,fontSize:13,color:"var(--text2)"}}>Total: <strong style={{color:"var(--accent)"}}>{fmt(order.total)}</strong></div>}
+          {!isConsignment&&<div style={{fontSize:12,color:"var(--text2)"}}>GCT ({order.tax_rate}%): {fmt(order.tax_amount)}</div>}
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
           <button className="btn btn-primary" onClick={onClose}>Done</button>
