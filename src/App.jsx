@@ -3996,7 +3996,7 @@ function SalesRepsPage({ salesReps, setSalesReps, showToast }) {
   };
 
   const remove = async (id, repName) => {
-    if (!confirm(\`Remove \${repName} from the sales reps list?\`)) return;
+    if (!confirm(`Remove ${repName} from the sales reps list?`)) return;
     await supabase.from("sales_reps").delete().eq("id", id);
     setSalesReps(prev => prev.filter(r => r.id !== id));
     showToast("Removed");
