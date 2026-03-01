@@ -792,7 +792,7 @@ export default function App() {
             {page==="settings" && <SettingsPage settings={settings} setSettings={setSettings} showToast={showToast}/>}
             {page==="stores" && <StoresPage stores={stores} setStores={setStores} showToast={showToast}/>}
             {page==="catalog" && <CatalogPage products={products} user={user} addToCart={addToCart} cart={cart} settings={settings}/>}
-            {page==="my-orders" && <MyOrdersPage orders={orders.filter(o=>o.customer_id===user.id)} settings={settings} customers={customers} setModal={setModal}/>}
+            {page==="my-orders" && <MyOrdersPage orders={orders.filter(o=>o.customer_id===user.id)} settings={settings} customers={customers} setModal={setModal} user={user}/>}
             {page==="account" && <AccountPage user={user} customers={customers} showToast={showToast} isAdmin={isAdmin}/>}
           </div>
         </div>
@@ -1204,7 +1204,8 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     }
   };
 
-  const allCats = ["All",...new Set(products.map(p=>p.category))];
+  const extraCats = settings.extra_categories ? (() => { try { return JSON.parse(settings.extra_categories); } catch { return []; } })() : [];
+  const allCats = ["All",...new Set([...products.map(p=>p.category).filter(Boolean),...extraCats])].sort((a,b)=>a==="All"?-1:b==="All"?1:a.localeCompare(b));
   const allSuppliers = [{id:"All",name:"All Suppliers"},...suppliers];
 
   return (
@@ -1373,16 +1374,22 @@ function ProductHistoryModal({ product, orders, transfers, onClose }) {
     }))
   );
 
+  const iconMap = {
+    product_added:"➕", product_updated:"✏️", product_archived:"📦",
+    stock_received:"📥", stock_adjusted:"🔧", stock_take:"🔢",
+    refund_processed:"↩️", product_imported:"📂"
+  };
+  const colorMap = {
+    product_added:"var(--success)", product_updated:"var(--accent)",
+    product_archived:"var(--warn)", stock_received:"var(--success)",
+    stock_adjusted:"var(--accent3)", stock_take:"var(--accent)",
+    refund_processed:"var(--danger)"
+  };
   const logEvents = logs.map(l=>({
-    type:l.action, date:l.timestamp, icon:
-      l.action==="product_added"?"➕":
-      l.action==="product_updated"?"✏️":
-      l.action==="product_archived"?"📦":
-      l.action==="stock_take"?"🔢":"📋",
+    type:l.action, date:l.timestamp,
+    icon: iconMap[l.action]||"📋",
     label: l.action?.replace(/_/g," "),
-    color: l.action==="product_added"?"var(--success)":
-           l.action==="product_updated"?"var(--accent)":
-           l.action==="product_archived"?"var(--warn)":"var(--text2)",
+    color: colorMap[l.action]||"var(--text2)",
     detail: l.details
   }));
 
@@ -2659,23 +2666,12 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
       )}
 
       {tab==="form"&&<POFormPage po={editing} suppliers={suppliers} products={products} setProducts={setProducts} settings={settings} showToast={showToast}
-        onSave={async(data)=>{
+        onSave={(data)=>{
           if(editing){
-            // Auto-determine status from received quantities
-            const allReceived = data.items.every(i=>i.received_qty>=i.ordered_qty);
-            const anyReceived = data.items.some(i=>i.received_qty>0);
-            const autoStatus = allReceived?"received":anyReceived?"partial":data.status==="cancelled"?"cancelled":"open";
-            await supabase.from("purchase_orders").update({supplier_id:data.supplier_id,supplier_name:data.supplier_name,expected_date:data.expected_date,shipping_cost:data.shipping_cost,lot_ref:data.lot_ref,notes:data.notes,status:autoStatus}).eq("id",editing.id);
-            await supabase.from("purchase_order_items").delete().eq("po_id",editing.id);
-            await supabase.from("purchase_order_items").insert(data.items.map(i=>({...i,po_id:editing.id})));
-            setPurchaseOrders(prev=>prev.map(p=>p.id===editing.id?{...p,...data,status:autoStatus}:p));
+            setPurchaseOrders(prev=>prev.map(p=>p.id===editing.id?{...p,...data}:p));
             showToast("Purchase order updated");
           } else {
-            const id = "PO-"+Date.now();
-            const po = {id,supplier_id:data.supplier_id,supplier_name:data.supplier_name,expected_date:data.expected_date,shipping_cost:data.shipping_cost||0,lot_ref:data.lot_ref||"",notes:data.notes||"",status:"open",created_at:new Date().toISOString()};
-            await supabase.from("purchase_orders").insert(po);
-            await supabase.from("purchase_order_items").insert(data.items.map(i=>({...i,po_id:id})));
-            setPurchaseOrders(prev=>[{...po,items:data.items},...prev]);
+            setPurchaseOrders(prev=>[data,...prev]);
             showToast("Purchase order created");
           }
           setEditing(null); setTab("list");
@@ -2732,36 +2728,7 @@ function POFormPage({ po, suppliers, products, setProducts, settings, showToast,
     if (!items.length) { showToast("Add at least one item","err"); return; }
     setSaving(true);
 
-    // For each item where received_qty changed vs what was previously saved,
-    // update product stock with weighted average cost
-    const previousItems = po?.items || [];
-    for (const item of items) {
-      const prevItem = previousItems.find(p=>p.product_id===item.product_id);
-      const prevReceived = prevItem?.received_qty || 0;
-      const nowReceived = parseInt(item.received_qty) || 0;
-      const newlyReceived = nowReceived - prevReceived;
-
-      if (newlyReceived > 0 && item.product_id) {
-        const prod = products.find(p=>p.id===item.product_id);
-        if (prod) {
-          const newCost = parseFloat(item.unit_cost) || 0;
-          const existingValue = prod.stock * (prod.cost || 0);
-          const newValue = newlyReceived * newCost;
-          const newStock = prod.stock + newlyReceived;
-          const avgCost = newStock > 0 ? Math.round((existingValue + newValue) / newStock) : newCost;
-          await supabase.from("products").update({stock:newStock, cost:avgCost, active:true}).eq("id",prod.id);
-          setProducts(prev=>prev.map(p=>p.id===prod.id?{...p,stock:newStock,cost:avgCost,active:true}:p));
-          await supabase.from("activity_log").insert({
-            action:"stock_received",
-            details:`Received ${newlyReceived} units of ${prod.name} @ ${fmt(newCost)} (avg cost now ${fmt(avgCost)}) via PO ${po?.id||"new"}`,
-            entity_type:"product", entity_id:String(prod.id),
-            user_name:"Admin", timestamp:new Date().toISOString()
-          }).catch(()=>{});
-        }
-      }
-    }
-
-    await onSave({...f, items: items.map(i=>({
+    const cleanItems = items.map(i=>({
       product_id: i.product_id||null,
       product_name: i.product_name||"",
       barcode: i.barcode||"",
@@ -2769,7 +2736,68 @@ function POFormPage({ po, suppliers, products, setProducts, settings, showToast,
       received_qty: parseInt(i.received_qty)||0,
       unit_cost: parseFloat(i.unit_cost)||0,
       note: i.note||""
-    }))});
+    }));
+
+    // Determine PO id — existing or generate new one now so activity_log can reference it
+    const poId = po?.id || ("PO-" + Date.now());
+
+    // Auto-determine status
+    const allReceived = cleanItems.every(i=>i.received_qty>=i.ordered_qty);
+    const anyReceived = cleanItems.some(i=>i.received_qty>0);
+    const autoStatus = allReceived?"received":anyReceived?"partial":f.status==="cancelled"?"cancelled":"open";
+
+    // For each item where received_qty increased, update stock with weighted avg cost
+    const previousItems = po?.items || [];
+    for (const item of cleanItems) {
+      const prevItem = previousItems.find(p=>p.product_id===item.product_id);
+      const prevReceived = prevItem?.received_qty || 0;
+      const newlyReceived = item.received_qty - prevReceived;
+
+      if (newlyReceived > 0 && item.product_id) {
+        const prod = products.find(p=>p.id===item.product_id);
+        if (prod) {
+          const newCost = item.unit_cost || 0;
+          const existingValue = (prod.stock||0) * (prod.cost || 0);
+          const newValue = newlyReceived * newCost;
+          const newStock = (prod.stock||0) + newlyReceived;
+          const avgCost = newStock > 0 ? Math.round((existingValue + newValue) / newStock) : newCost;
+          await supabase.from("products").update({stock:newStock, cost:avgCost, active:true}).eq("id",prod.id);
+          setProducts(prev=>prev.map(p=>p.id===prod.id?{...p,stock:newStock,cost:avgCost,active:true}:p));
+          await supabase.from("activity_log").insert({
+            action:"stock_received",
+            details:`Received ${newlyReceived} units @ ${fmt(newCost)} (avg cost now ${fmt(avgCost)}) via PO ${poId}`,
+            entity_type:"product", entity_id:String(prod.id),
+            user_name:"Admin", timestamp:new Date().toISOString()
+          }).catch(()=>{});
+        }
+      }
+    }
+
+    if (po?.id) {
+      // UPDATE existing PO
+      const {error} = await supabase.from("purchase_orders").update({
+        supplier_id:f.supplier_id, supplier_name:f.supplier_name,
+        expected_date:f.expected_date, shipping_cost:f.shipping_cost||0,
+        lot_ref:f.lot_ref||"", notes:f.notes||"", status:autoStatus
+      }).eq("id", po.id);
+      if (error) { showToast("Failed to save: "+error.message,"err"); setSaving(false); return; }
+      await supabase.from("purchase_order_items").delete().eq("po_id", po.id);
+      await supabase.from("purchase_order_items").insert(cleanItems.map(i=>({...i,po_id:po.id})));
+      onSave({...f, id:po.id, status:autoStatus, items:cleanItems});
+    } else {
+      // INSERT new PO
+      const poRow = {
+        id:poId, supplier_id:f.supplier_id, supplier_name:f.supplier_name||"",
+        expected_date:f.expected_date||null, shipping_cost:parseFloat(f.shipping_cost)||0,
+        lot_ref:f.lot_ref||"", notes:f.notes||"", status:autoStatus,
+        created_at:new Date().toISOString()
+      };
+      const {error} = await supabase.from("purchase_orders").insert(poRow);
+      if (error) { showToast("Failed to save: "+error.message,"err"); setSaving(false); return; }
+      const {error:itemErr} = await supabase.from("purchase_order_items").insert(cleanItems.map(i=>({...i,po_id:poId})));
+      if (itemErr) { showToast("PO saved but items failed: "+itemErr.message,"err"); }
+      onSave({...poRow, items:cleanItems});
+    }
     setSaving(false);
   };
 
@@ -2778,7 +2806,7 @@ function POFormPage({ po, suppliers, products, setProducts, settings, showToast,
       {showNewProductModal&&<ProductModal
         product={null}
         suppliers={suppliers}
-        categories={[...new Set(products.map(p=>p.category).filter(Boolean))]}
+        categories={[...new Set([...products.map(p=>p.category).filter(Boolean), ...(settings?.extra_categories ? (() => { try { return JSON.parse(settings.extra_categories); } catch { return []; } })() : [])])].sort((a,b)=>a.localeCompare(b))}
         onClose={()=>setShowNewProductModal(false)}
         onSave={async(data)=>{
           // Save full product to DB
@@ -3932,7 +3960,8 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── MY ORDERS PAGE (BUYER) ───────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function MyOrdersPage({ orders, settings, customers, setModal }) {
+function MyOrdersPage({ orders, settings, customers, setModal, user }) {
+  const isConsignment = user?.customer_type === 'consignment';
   if(!orders.length) return <div className="empty"><div className="ei">🧾</div><p>You haven't placed any orders yet.</p></div>;
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -3945,7 +3974,7 @@ function MyOrdersPage({ orders, settings, customers, setModal }) {
             </div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               <StatusBadge status={o.status}/>
-              <div style={{fontFamily:"Syne",fontWeight:700,fontSize:17,color:"var(--accent)"}}>{fmt(o.total)}</div>
+              {!isConsignment&&<div style={{fontFamily:"Syne",fontWeight:700,fontSize:17,color:"var(--accent)"}}>{fmt(o.total)}</div>}
               <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>View Invoice</button>
             </div>
           </div>
@@ -3953,12 +3982,13 @@ function MyOrdersPage({ orders, settings, customers, setModal }) {
             {(o.items||[]).map((item,i)=>(
               <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"5px 0",borderBottom:"1px solid var(--border)"}}>
                 <span>{item.name}</span>
-                <span style={{color:"var(--text2)"}}>× {item.qty} = {fmt(item.qty*item.unit_price)}</span>
+                {!isConsignment&&<span style={{color:"var(--text2)"}}>× {item.qty} = {fmt(item.qty*item.unit_price)}</span>}
+                {isConsignment&&<span style={{color:"var(--text2)"}}>× {item.qty}</span>}
               </div>
             ))}
-            <div style={{marginTop:10,paddingTop:8,borderTop:"1px solid var(--border)",display:"flex",justifyContent:"flex-end",gap:16}}>
+            {!isConsignment&&<div style={{marginTop:10,paddingTop:8,borderTop:"1px solid var(--border)",display:"flex",justifyContent:"flex-end",gap:16}}>
               <span style={{fontSize:12,color:"var(--text2)"}}>Subtotal: {fmt(o.subtotal)} · GCT ({o.tax_rate}%): {fmt(o.tax_amount)}</span>
-            </div>
+            </div>}
             {o.type==="consignment"&&o.consignment_due&&<div style={{marginTop:8,fontSize:12,color:"var(--warn)"}}>📋 Consignment due: {o.consignment_due}</div>}
             {o.notes&&<div style={{marginTop:6,fontSize:12,color:"var(--text2)"}}>Note: {o.notes}</div>}
           </div>
@@ -4144,6 +4174,7 @@ function OrderSuccessModal({ order, settings, customers, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function InvoiceViewModal({ order, settings, customers, onClose }) {
   const customer=customers.find(c=>c.id===order.customer_id);
+  const isConsignment = customer?.customer_type==="consignment" || order.type==="consignment";
   const exportCSV=()=>{
     const rows=[
       ["Invoice",order.id],["Customer",order.customer_name],["Date",order.date],["Status",order.status],["Payment",order.payment_method||"—"],[""],
@@ -4159,8 +4190,8 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
       <div className="modal-head">
         <h2>Invoice {order.id}</h2>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          <button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ Excel/CSV</button>
-          <button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings)}>🖨 PDF/Print</button>
+          {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ Excel/CSV</button>}
+          {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings)}>🖨 PDF/Print</button>}
           <button className="xbtn" onClick={onClose}>✕</button>
         </div>
       </div>
@@ -4182,31 +4213,31 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
 
         <div className="tbl-wrap" style={{marginBottom:16}}>
           <table>
-            <thead><tr><th>Barcode</th><th>Product</th><th>Qty</th><th style={{textAlign:"right"}}>Unit Price</th><th style={{textAlign:"right"}}>Total</th></tr></thead>
+            <thead><tr><th>Barcode</th><th>Product</th><th>Qty</th>{!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}</tr></thead>
             <tbody>{(order.items||[]).map((item,i)=>(
               <tr key={i}>
                 <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
                 <td style={{fontWeight:500}}>{item.name}</td>
                 <td>{item.qty}</td>
-                <td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>
-                <td style={{textAlign:"right",fontWeight:600}}>{fmt(item.qty*item.unit_price)}</td>
+                {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
+                {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(item.qty*item.unit_price)}</td>}
               </tr>
             ))}</tbody>
           </table>
         </div>
 
-        <div style={{display:"flex",justifyContent:"flex-end"}}>
+        {!isConsignment&&<div style={{display:"flex",justifyContent:"flex-end"}}>
           <div style={{minWidth:240}}>
             <div className="total-row"><span>Subtotal</span><span>{fmt(order.subtotal)}</span></div>
             <div className="total-row"><span>GCT ({order.tax_rate}%)</span><span>{fmt(order.tax_amount)}</span></div>
             <div className="total-row grand"><span>Total</span><span>{fmt(order.total)}</span></div>
           </div>
-        </div>
+        </div>}
         {order.notes&&<div style={{marginTop:12,padding:12,background:"var(--bg3)",borderRadius:7,fontSize:12,color:"var(--text2)"}}><strong>Notes:</strong> {order.notes}</div>}
         {order.type==="consignment"&&order.consignment_due&&<div style={{marginTop:8,fontSize:12,color:"var(--warn)"}}>📋 Consignment settlement due: {order.consignment_due}</div>}
 
         {/* Bank transfer + payment link */}
-        {(settings.bank_name||settings.payment_link)&&(
+        {!isConsignment&&(settings.bank_name||settings.payment_link)&&(
           <div style={{marginTop:20,borderTop:"2px solid var(--border)",paddingTop:16,display:"grid",gridTemplateColumns:settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr",gap:16}}>
             {settings.bank_name&&(
               <div style={{background:"var(--bg3)",borderRadius:8,padding:"14px 16px"}}>
