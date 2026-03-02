@@ -712,6 +712,24 @@ export default function App() {
     // Mark cart as converted in Supabase
     try { await supabase.from("customer_carts").upsert({customer_id:user.id,items:"[]",item_count:0,subtotal:0,status:"converted",updated_at:new Date().toISOString()},{onConflict:"customer_id"}); } catch(e) {}
     setCustomerCarts(prev=>prev.map(c=>c.customer_id===user.id?{...c,items:"[]",item_count:0,status:"converted"}:c));
+    // Notify admin of new order via email
+    try {
+      fetch(`${SUPABASE_URL}/functions/v1/notify-admin`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`},
+        body:JSON.stringify({
+          type:"new_order",
+          orderId:id,
+          customerName:customer?.company||user.name,
+          customerEmail:user.email,
+          orderType:orderType,
+          items:cart.map(i=>`${i.qty}× ${i.name}`).join("\n"),
+          total:orderType==="consignment"?"Consignment (TBD)":fmt(cartTotal),
+          paymentMethod:payMethod||"—",
+          notes:notes||""
+        })
+      }).catch(()=>{});
+    } catch(e) {}
     setModal({type:"orderSuccess",data:o});
   };
 
@@ -753,12 +771,13 @@ export default function App() {
       {id:"catalog",icon:"🏪",label:"Catalog"},
       {id:"incoming",icon:"📬",label:"Arriving Soon"},
       {id:"clearance",icon:"🔥",label:"Clearance"},
+      {id:"hot-sellers",icon:"⭐",label:"Hot Sellers"},
       {id:"my-orders",icon:"🧾",label:"My Orders"},
     ]},
     {section:"Account", items:[{id:"account",icon:"👤",label:"Account"}]},
   ];
 
-  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Orders",backorders:"Back Orders",invoices:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders",account:"My Account",salesreps:"Sales Reps" };
+  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Orders",backorders:"Back Orders",invoices:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders","hot-sellers":"Hot Sellers",account:"My Account",salesreps:"Sales Reps" };
 
   return (
     <>
@@ -820,6 +839,7 @@ export default function App() {
             {page==="backorders" && <BackordersPage backorders={backorders} setBackorders={setBackorders} orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} products={products} setProducts={setProducts}/>}
             {page==="invoices" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user}/>}
+            {page==="hot-sellers" && <HotSellersPage products={products} user={user} addToCart={addToCart} cart={cart}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} salesReps={salesReps} showToast={showToast}/>}
             {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
@@ -986,7 +1006,7 @@ function DashboardPage({ products, orders, customers, transfers, settings, setPa
   const lowStock = activeProducts.filter(p=>p.stock>0&&p.stock<=p.low_stock_threshold).length;
   const outOfStock = activeProducts.filter(p=>p.stock===0).length;
   const pendingApprovals = customers.filter(c=>!c.approved).length;
-  const revenueThisMonth = orders.filter(o=>o.date?.startsWith(today().slice(0,7))).reduce((s,o)=>s+o.total,0);
+  const revenueThisMonth = orders.filter(o=>o.date?.startsWith(today().slice(0,7))&&o.type!=="consignment").reduce((s,o)=>s+o.total,0);
   const newArrivals = activeProducts.filter(p=>p.is_new_arrival).slice(0,5);
   const lowStockItems = activeProducts.filter(p=>p.stock>0&&p.stock<=p.low_stock_threshold).slice(0,5);
 
@@ -1297,6 +1317,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
           <table>
             <thead><tr>
               <th><input type="checkbox" onChange={e=>e.target.checked?selectAll():clearSelect()}/></th>
+              <th style={{width:44}}>Photo</th>
               <th>Barcode</th>
               <SortTh label="Brand" sortKey="brand" current={key} dir={dir} onToggle={toggle}/>
               <SortTh label="Name" sortKey="name" current={key} dir={dir} onToggle={toggle}/>
@@ -1323,6 +1344,12 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                 return (
                   <tr key={p.id} style={{opacity:p.active?1:.5}}>
                     <td><input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggleSelect(p.id)}/></td>
+                    <td>
+                      {p.image_url
+                        ? <img src={p.image_url} alt="" style={{width:36,height:36,objectFit:"cover",borderRadius:6,border:"1px solid var(--border)",display:"block"}} onError={e=>{e.target.style.display="none";e.target.nextSibling.style.display="flex";}} />
+                        : null}
+                      {!p.image_url&&<div style={{width:36,height:36,borderRadius:6,border:"1px dashed var(--border)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"var(--text3)"}}>📷</div>}
+                    </td>
                     <td><code style={{fontSize:10}}>{p.barcode||"—"}</code></td>
                     <td style={{fontSize:12}}>{p.brand||"—"}</td>
                     <td>
@@ -1342,7 +1369,8 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                     <td>
                       <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
                         {p.is_new_arrival&&<span className="badge bg" style={{fontSize:9}}>NEW</span>}
-                        {p.is_clearance&&<span className="badge bo" style={{fontSize:9}}>CLEARANCE</span>}
+                        {p.is_clearance&&<span className="badge bo" style={{fontSize:9}}>🔥 CLEARANCE</span>}
+                        {p.is_hot_seller&&<span className="badge" style={{fontSize:9,background:"#fef9c3",color:"#854d0e",border:"1px solid #fde047"}}>⭐ HOT</span>}
                         {!p.active&&<span className="badge br" style={{fontSize:9}}>ARCHIVED</span>}
                         {p.wholesale_visible===false&&<span className="badge" style={{fontSize:9,background:"var(--warn)22",color:"var(--warn)"}}>HIDDEN</span>}
                       </div>
@@ -1380,7 +1408,8 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false,
       clearance_price:data.clearance_price||null,
-      wholesale_visible:data.wholesale_visible!==false
+      wholesale_visible:data.wholesale_visible!==false,
+      is_hot_seller:data.is_hot_seller||false
     };
     // Duplicate barcode check — exclude this product from check
     if(payload.barcode){
@@ -1407,6 +1436,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false, clearance_price:data.clearance_price||null,
       wholesale_visible:data.wholesale_visible!==false,
+      is_hot_seller:data.is_hot_seller||false,
       active:true, created_at:new Date().toISOString()
     };
     const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
@@ -1537,7 +1567,9 @@ function ProductModal({ product, categories, onSave, onClose }) {
     low_stock_threshold:product?.low_stock_threshold||5, min_order:product?.min_order||1,
     description:product?.description||"", image_url:product?.image_url||"",
     is_clearance:product?.is_clearance||false, clearance_price:product?.clearance_price||"",
-    wholesale_visible:product?.wholesale_visible!==false  // default true
+    wholesale_visible:product?.wholesale_visible!==false,  // default true
+    is_hot_seller:product?.is_hot_seller||false,
+    newCatName:"", addingCat:false
   });
   const [uploading, setUploading] = useState(false);
   const imgRef = useRef();
@@ -1598,9 +1630,17 @@ function ProductModal({ product, categories, onSave, onClose }) {
                 <div className="form-group"><label>Brand</label><input value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
               </div>
               <div className="form-group"><label>Category</label>
-                  <select value={f.category} onChange={e=>s("category",e.target.value)}>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <select value={f.category} onChange={e=>{if(e.target.value==="__new__"){s("addingCat",true);}else{s("category",e.target.value);s("addingCat",false);}}} style={{flex:1}}>
                     {categories.map(c=><option key={c}>{c}</option>)}
+                    <option value="__new__">+ Add new category…</option>
                   </select>
+                </div>
+                {f.addingCat&&<div style={{display:"flex",gap:6,marginTop:6}}>
+                  <input placeholder="New category name" value={f.newCatName} onChange={e=>s("newCatName",e.target.value)} style={{flex:1}}/>
+                  <button type="button" className="btn btn-primary btn-sm" onClick={()=>{if(f.newCatName.trim()){s("category",f.newCatName.trim());s("addingCat",false);s("newCatName","");}}}>Add</button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={()=>{s("addingCat",false);s("newCatName","");}}>✕</button>
+                </div>}
               </div>
             </div>
           </div>
@@ -1615,7 +1655,8 @@ function ProductModal({ product, categories, onSave, onClose }) {
             <div className="form-group"><label>Clearance Price (J$)</label><input type="number" value={f.clearance_price} onChange={e=>s("clearance_price",e.target.value)} placeholder="Leave blank if not clearance"/></div>
           </div>
           <div style={{display:"flex",gap:24,marginTop:4,flexWrap:"wrap"}}>
-            <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> Mark as Clearance</label>
+            <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> 🔥 Clearance</label>
+            <label className="checkbox-row"><input type="checkbox" checked={f.is_hot_seller} onChange={e=>s("is_hot_seller",e.target.checked)}/> ⭐ Hot Seller</label>
             <label className="checkbox-row" title="Uncheck to hide this product from customer catalog, clearance, and arriving soon pages">
               <input type="checkbox" checked={f.wholesale_visible} onChange={e=>s("wholesale_visible",e.target.checked)}/>
               {f.wholesale_visible
@@ -1637,7 +1678,8 @@ function ProductModal({ product, categories, onSave, onClose }) {
               low_stock_threshold:parseInt(f.low_stock_threshold)||5,
               min_order:parseInt(f.min_order)||1,
               clearance_price:f.clearance_price&&String(f.clearance_price).trim()!==""?parseFloat(f.clearance_price):null,
-              wholesale_visible:f.wholesale_visible!==false
+              wholesale_visible:f.wholesale_visible!==false,
+              is_hot_seller:f.is_hot_seller||false
             });
           }}>{uploading?"Uploading…":"Save Product"}</button>
         </div>
@@ -2338,16 +2380,7 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
 function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, settings, showToast, products, setProducts }) {
   const [search, setSearch] = useState("");
   const [filterDate, setFilterDate] = useState("");
-  const [shipModal, setShipModal] = useState(null);
-
-  const finalizeOrder = async (order) => {
-    if (!confirm(`Convert ${order.id} to an Invoice? This cannot be undone.`)) return;
-    await supabase.from("orders").update({ status: "invoiced" }).eq("id", order.id);
-    setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: "invoiced"} : o));
-    await supabase.from("backorders").update({ status: "fulfilled" }).eq("order_id", order.id).eq("status", "open");
-    setBackorders(prev => prev.map(b => b.order_id === order.id && b.status === "open" ? {...b, status: "fulfilled"} : b));
-    showToast(`${order.id} converted to Invoice ✓`);
-  };
+  const [viewOrder, setViewOrder] = useState(null);
 
   const activeOrders = useMemo(() => orders.filter(o => {
     if (o.status !== "order" && o.status !== "partial_shipped") return false;
@@ -2359,6 +2392,11 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
 
   const { sorted, key, dir, toggle } = useSort(activeOrders, "date");
   const pg = usePagination(sorted, 20);
+
+  if (viewOrder) {
+    const fresh = orders.find(o => o.id === viewOrder.id) || viewOrder;
+    return <OrderDetailPage order={fresh} orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} products={products} setProducts={setProducts} customers={customers} settings={settings} showToast={showToast} onBack={()=>setViewOrder(null)}/>;
+  }
 
   return (
     <>
@@ -2391,11 +2429,12 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
+                <td style={{fontWeight:600,color:"var(--accent)"}}>
+                  {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
+                </td>
                 <td><StatusBadge status={o.status}/></td>
                 <td><div className="tbl-actions">
-                  <button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>🚚 Ship</button>
-                  <button className="btn btn-xs" onClick={()=>finalizeOrder(o)} style={{background:"var(--success)",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✓ Complete</button>
+                  <button className="btn btn-primary btn-xs" onClick={()=>setViewOrder(o)}>📋 View Order</button>
                 </div></td>
               </tr>
             ))}
@@ -2408,22 +2447,193 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
           <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage}/>
         </div>
       </div>
-
-      {shipModal && (
-        <ShipOrderModal
-          order={shipModal}
-          orders={orders}
-          setOrders={setOrders}
-          backorders={backorders}
-          setBackorders={setBackorders}
-          products={products}
-          setProducts={setProducts}
-          settings={settings}
-          showToast={showToast}
-          onClose={()=>setShipModal(null)}
-        />
-      )}
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── ORDER DETAIL PAGE ────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function OrderDetailPage({ order, orders, setOrders, backorders, setBackorders, products, setProducts, customers, settings, showToast, onBack }) {
+  const customer = customers.find(c => c.id === order.customer_id);
+  const isConsignment = order.type === "consignment" || customer?.customer_type === "consignment";
+
+  const [shipQtys, setShipQtys] = useState(() => {
+    const init = {};
+    (order.items || []).forEach(item => {
+      init[item.product_id] = item.qty_shipped ?? item.qty;
+    });
+    return init;
+  });
+  const [hideCosts, setHideCosts] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const lineItems = (order.items || []).map(item => {
+    const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, item.qty));
+    const backordered = item.qty - toShip;
+    const prod = products.find(p => p.id === item.product_id);
+    return { ...item, toShip, backordered, cost: prod?.cost || 0 };
+  });
+
+  const handleComplete = async () => {
+    if (!confirm(`Complete order ${order.id}? This will finalise ship quantities, create backorders for any remainder, and convert to an Invoice.`)) return;
+    setBusy(true);
+    try {
+      for (const item of lineItems) {
+        const prevShipped = order.items.find(i => i.product_id === item.product_id)?.qty_shipped ?? 0;
+        const additionalShip = Math.max(0, item.toShip - prevShipped);
+        if (additionalShip > 0) {
+          const { data: prod } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
+          if (prod) {
+            const newStock = Math.max(0, prod.stock - additionalShip);
+            await supabase.from("products").update({ stock: newStock }).eq("id", item.product_id);
+            setProducts(prev => prev.map(p => p.id === item.product_id ? {...p, stock: newStock} : p));
+          }
+        }
+        if (item.toShip > 0) {
+          await supabase.from("order_items").update({ qty_shipped: item.toShip })
+            .eq("order_id", order.id).eq("product_id", item.product_id);
+        }
+        if (item.backordered > 0) {
+          const existing = backorders.find(b => b.order_id === order.id && b.product_id === item.product_id && b.status === "open");
+          if (existing) {
+            await supabase.from("backorders").update({ qty_shipped: item.toShip, qty_remaining: item.backordered }).eq("id", existing.id);
+            setBackorders(prev => prev.map(b => b.id === existing.id ? {...b, qty_shipped: item.toShip, qty_remaining: item.backordered} : b));
+          } else {
+            const { data: bo } = await supabase.from("backorders").insert({
+              order_id: order.id, product_id: item.product_id, product_name: item.name,
+              qty_ordered: item.qty, qty_shipped: item.toShip, qty_remaining: item.backordered,
+              unit_price: item.unit_price, barcode: item.barcode || "", status: "open",
+              created_at: new Date().toISOString()
+            }).select().single();
+            if (bo) setBackorders(prev => [...prev, bo]);
+          }
+        }
+      }
+
+      await supabase.from("orders").update({ status: "invoiced" }).eq("id", order.id);
+      setOrders(prev => prev.map(o => o.id === order.id ? {
+        ...o, status: "invoiced",
+        items: o.items.map(i => ({ ...i, qty_shipped: shipQtys[i.product_id] ?? i.qty }))
+      } : o));
+
+      const hasBO = lineItems.some(i => i.backordered > 0);
+      showToast(hasBO ? `${order.id} invoiced — ${lineItems.filter(i=>i.backordered>0).length} item(s) backordered` : `${order.id} fully shipped → Invoice ✓`);
+      onBack();
+    } catch(e) {
+      console.error(e);
+      showToast("Error completing order", "err");
+    }
+    setBusy(false);
+  };
+
+  const shippedSubtotal = lineItems.reduce((s, i) => s + i.toShip * i.unit_price, 0);
+  const shippedTax = Math.round(shippedSubtotal * (order.tax_rate || 15) / 100);
+  const existingBOs = backorders.filter(b => b.order_id === order.id && b.status === "open");
+
+  return (
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20,flexWrap:"wrap"}}>
+        <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back to Orders</button>
+        <div style={{fontFamily:"Syne",fontWeight:700,fontSize:20}}>{order.id}</div>
+        <StatusBadge status={order.status}/>
+        <span className={`badge ${isConsignment?"bo":"bb"}`}>{order.type||"standard"}</span>
+      </div>
+
+      <div className="card" style={{marginBottom:14}}>
+        <div className="card-body" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,padding:16}}>
+          <div>
+            <div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Customer</div>
+            <div style={{fontWeight:700}}>{customer?.company || order.customer_name}</div>
+            <div style={{fontSize:12,color:"var(--text2)"}}>{customer?.email}</div>
+          </div>
+          <div>
+            <div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Order Info</div>
+            <div style={{fontSize:13}}>{order.date} · {order.payment_method||"—"}</div>
+          </div>
+          <div>
+            <div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Notes</div>
+            <div style={{fontSize:12,color:"var(--text2)"}}>{order.notes||"—"}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{marginBottom:14}}>
+        <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h3 style={{margin:0}}>Order Items — Enter Ship Quantities</h3>
+          <label className="checkbox-row" style={{fontSize:12,gap:6,margin:0}}>
+            <input type="checkbox" checked={hideCosts} onChange={e=>setHideCosts(e.target.checked)}/>
+            Hide unit costs (for screenshots)
+          </label>
+        </div>
+        <div className="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th>Product</th>
+              <th style={{textAlign:"center"}}>Ordered</th>
+              {!hideCosts&&<th style={{textAlign:"right",color:"var(--text3)"}}>Unit Cost</th>}
+              {!isConsignment&&!hideCosts&&<th style={{textAlign:"right"}}>Unit Price</th>}
+              <th style={{textAlign:"center"}}>Ship Qty</th>
+              <th style={{textAlign:"center",color:"var(--warn)"}}>Backorder</th>
+            </tr></thead>
+            <tbody>{lineItems.map(item=>(
+              <tr key={item.product_id}>
+                <td>
+                  <div style={{fontWeight:500}}>{item.name}</div>
+                  {item.barcode&&<div style={{fontSize:10,color:"var(--text3)"}}>{item.barcode}</div>}
+                </td>
+                <td style={{textAlign:"center",fontWeight:600}}>{item.qty}</td>
+                {!hideCosts&&<td style={{textAlign:"right",color:"var(--text2)",fontSize:12}}>{fmt(item.cost)}</td>}
+                {!isConsignment&&!hideCosts&&<td style={{textAlign:"right",color:"var(--accent)",fontWeight:600}}>{fmt(item.unit_price)}</td>}
+                <td style={{textAlign:"center"}}>
+                  <input type="number" min={0} max={item.qty}
+                    value={shipQtys[item.product_id] ?? item.qty}
+                    onChange={e=>setShipQtys(p=>({...p,[item.product_id]:Math.min(item.qty,Math.max(0,parseInt(e.target.value)||0))}))}
+                    style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg3)",fontWeight:600}}
+                  />
+                </td>
+                <td style={{textAlign:"center"}}>
+                  {item.backordered>0
+                    ?<span style={{color:"var(--warn)",fontWeight:700,fontSize:16}}>{item.backordered}</span>
+                    :<span style={{color:"var(--success)"}}>✓</span>}
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        {!isConsignment&&!hideCosts&&(
+          <div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",display:"flex",gap:24,justifyContent:"flex-end",fontSize:13}}>
+            <span>Subtotal: <strong>{fmt(shippedSubtotal)}</strong></span>
+            <span>GCT ({order.tax_rate}%): <strong>{fmt(shippedTax)}</strong></span>
+            <span style={{fontWeight:700,color:"var(--accent)",fontSize:15}}>Total: {fmt(shippedSubtotal+shippedTax)}</span>
+          </div>
+        )}
+      </div>
+
+      {existingBOs.length>0&&(
+        <div className="card" style={{marginBottom:14}}>
+          <div style={{padding:"10px 16px",borderBottom:"1px solid var(--border)"}}><h3 style={{margin:0}}>⏳ Open Backorders for this Order</h3></div>
+          <div className="tbl-wrap">
+            <table>
+              <thead><tr><th>Product</th><th style={{textAlign:"center"}}>Remaining</th></tr></thead>
+              <tbody>{existingBOs.map(b=>(
+                <tr key={b.id}>
+                  <td>{b.product_name}</td>
+                  <td style={{textAlign:"center",color:"var(--warn)",fontWeight:600}}>{b.qty_remaining}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+        <button className="btn btn-secondary" onClick={onBack}>Cancel</button>
+        <button className="btn btn-primary" onClick={handleComplete} disabled={busy}>
+          {busy?"Processing…":"✓ Complete & Generate Invoice"}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -2467,11 +2677,6 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
             await supabase.from("products").update({ stock: newStock }).eq("id", item.product_id);
             setProducts(prev => prev.map(p => p.id === item.product_id ? {...p, stock: newStock} : p));
           }
-          // Record shipped qty on order_items so invoice shows correct qty
-          await supabase.from("order_items")
-            .update({ qty_shipped: toShip })
-            .eq("order_id", order.id)
-            .eq("product_id", item.product_id);
           shippedItems.push({ ...item, qty_shipped: toShip });
         }
 
@@ -2503,24 +2708,19 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
         setBackorders(prev => prev.map(b => b.id === backorderRecord.id ? {...b, status:"fulfilled", qty_shipped: backorderRecord.qty_ordered} : b));
       }
 
-      // Determine new order status
-      let newOrderStatus = order.status;
-      let fullyComplete = false;
+      // Check if all backorders for this order are now fulfilled
+      const allBackorders = await supabase.from("backorders").select("*").eq("order_id", order.id).eq("status","open");
+      const remainingOpen = (allBackorders.data || []).filter(b => !isBackorder || b.id !== backorderRecord?.id);
 
-      if (newBackorders.length > 0) {
-        // Created backorders this run — partial
-        newOrderStatus = "partial_shipped";
-      } else if (isBackorder) {
-        // Fulfilling a backorder — check if any other open backorders remain
-        const { data: remaining } = await supabase
-          .from("backorders").select("id").eq("order_id", order.id).eq("status","open")
-          .neq("id", backorderRecord.id);
-        fullyComplete = !remaining || remaining.length === 0;
-        newOrderStatus = fullyComplete ? "invoiced" : "partial_shipped";
-      } else if (shippedItems.length > 0) {
-        // First ship, no backorders — fully shipped
-        fullyComplete = true;
+      const fullyComplete = newBackorders.length === 0 && remainingOpen.length === 0;
+
+      let newOrderStatus;
+      if (fullyComplete) {
         newOrderStatus = "invoiced";
+      } else if (shippedItems.length > 0) {
+        newOrderStatus = "partial_shipped";
+      } else {
+        newOrderStatus = order.status;
       }
 
       await supabase.from("orders").update({ status: newOrderStatus }).eq("id", order.id);
@@ -2604,15 +2804,6 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
   const [search, setSearch] = useState("");
   const [shipModal, setShipModal] = useState(null); // { order, backorderRecord }
 
-  const finalizeOrder = async (order) => {
-    if (!confirm(`Convert ${order.id} to an Invoice? All remaining backorders will be marked fulfilled.`)) return;
-    await supabase.from("orders").update({ status: "invoiced" }).eq("id", order.id);
-    setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: "invoiced"} : o));
-    await supabase.from("backorders").update({ status: "fulfilled" }).eq("order_id", order.id).eq("status", "open");
-    setBackorders(prev => prev.map(b => b.order_id === order.id && b.status === "open" ? {...b, status: "fulfilled"} : b));
-    showToast(`${order.id} converted to Invoice ✓`);
-  };
-
   const openBackorders = useMemo(() => backorders.filter(b => {
     if (b.status !== "open") return false;
     const q = search.toLowerCase();
@@ -2652,10 +2843,7 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                 <div style={{fontFamily:"Syne",fontWeight:700}}>{orderId}</div>
                 <div style={{fontSize:11,color:"var(--text2)",marginTop:2}}>{order?.customer_name} · Ordered {order?.date}</div>
               </div>
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <StatusBadge status={order?.status||"partial_shipped"}/>
-                {order && <button className="btn btn-xs" onClick={()=>finalizeOrder(order)} style={{background:"var(--success)",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✓ Complete → Invoice</button>}
-              </div>
+              <StatusBadge status={order?.status||"partial_shipped"}/>
             </div>
             <div className="card-body" style={{padding:0}}>
               <div className="tbl-wrap">
@@ -2728,22 +2916,9 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
   const pg=usePagination(sorted,20);
 
   const updateStatus=async(id,status)=>{
-    const order = orders.find(o=>o.id===id);
-    // Deduct stock when admin marks as shipped (only once)
-    if(status==="shipped" && order?.status!=="shipped" && order?.status!=="delivered") {
-      for(const item of (order?.items||[])) {
-        const {data:prod} = await supabase.from("products").select("stock").eq("id",item.product_id).single();
-        if(prod) {
-          const newStock = Math.max(0, prod.stock - item.qty);
-          await supabase.from("products").update({stock:newStock}).eq("id",item.product_id);
-          setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:newStock}:p));
-        }
-      }
-      showToast("Order shipped — inventory deducted");
-    }
     await supabase.from("orders").update({status}).eq("id",id);
     setOrders(p=>p.map(o=>o.id===id?{...o,status}:o));
-    if(status!=="shipped") showToast("Status updated");
+    showToast("Status updated");
   };
 
   const exportCSV=()=>{
@@ -2787,7 +2962,11 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
+                <td style={{fontWeight:600,color:"var(--accent)"}}>
+                  {o.type==="consignment"
+                    ? <span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>
+                    : fmt(o.total)}
+                </td>
                 <td>
                   <select value={o.status} onChange={e=>updateStatus(o.id,e.target.value)} style={{padding:"3px 6px",fontSize:11,width:"auto",background:"var(--bg3)"}}>
                     {["invoiced","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
@@ -2806,7 +2985,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
           </table>
         </div>
         <div style={{padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"1px solid var(--border)"}}>
-          <span style={{fontSize:12,color:"var(--text3)"}}>{pg.total} invoice{pg.total!==1?"s":""} · Total: {fmt(filtered.reduce((s,o)=>s+o.total,0))}</span>
+          <span style={{fontSize:12,color:"var(--text3)"}}>{pg.total} invoice{pg.total!==1?"s":""} · Total: {fmt(filtered.filter(o=>o.type!=="consignment").reduce((s,o)=>s+o.total,0))}</span>
           <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage}/>
         </div>
       </div>
@@ -2814,6 +2993,65 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
       {showEmailModal&&<EmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
       {showRefund&&<RefundModal order={showRefund} onClose={()=>setShowRefund(null)} showToast={showToast} setOrders={setOrders} setProducts={setProducts} products={products}/>}
     </>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── HOT SELLERS PAGE (BUYER) ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function HotSellersPage({ products, user, addToCart, cart }) {
+  const isConsignment = user?.customer_type === "consignment";
+  const items = products.filter(p => p.is_hot_seller && p.active && p.stock > 0 && p.wholesale_visible !== false);
+  const inCart = id => cart.find(i => i.pid === id)?.qty || 0;
+
+  if (!user?.approved) return (
+    <div className="empty"><div className="ei">⏳</div><h3>Account Pending Approval</h3></div>
+  );
+
+  return (
+    <div>
+      <div className="alert alert-ok mb-4" style={{background:"#fef9c3",border:"1px solid #fde047",color:"#854d0e"}}>
+        ⭐ {items.length} hot seller{items.length!==1?"s":""} — our most popular items right now!
+      </div>
+      {items.length===0&&<div className="empty"><div className="ei">⭐</div><p>No hot sellers right now — check back soon!</p></div>}
+      <div className="prod-grid">
+        {items.map(p=>{
+          const qty=inCart(p.id);
+          const price=applyDiscount(p.wholesale_price,user.discount_pct||0);
+          const savingPct=p.retail_price?Math.round((1-price/p.retail_price)*100):0;
+          return (
+            <div key={p.id} className="prod-card">
+              <div className="prod-tag"><span className="new-badge" style={{background:"#f59e0b",color:"#fff"}}>⭐ HOT</span></div>
+              <div className="prod-card-img">
+                {p.image_url?<img src={p.image_url} alt={p.name} style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<span style={{fontSize:40}}>📱</span>}
+              </div>
+              <div className="prod-card-body">
+                <div className="prod-card-brand">{p.brand}</div>
+                <div className="prod-card-name">{p.name}</div>
+                {p.barcode&&<div style={{fontSize:10,color:"var(--text3)",marginBottom:4}}>Barcode: {p.barcode}</div>}
+                {!isConsignment&&<>
+                  <div className="prod-price-row"><span className="prod-ws">{fmt(price)}</span>{user.discount_pct>0&&<span className="prod-retail">{fmt(p.wholesale_price)}</span>}</div>
+                  {p.retail_price>0&&<div className="prod-srp">SRP: {fmt(p.retail_price)} · Save {savingPct}%</div>}
+                </>}
+                <div className="prod-stock">{p.stock} in stock · MOQ: {p.min_order}{qty>0?` · ${qty} in cart`:""}</div>
+                <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+                  <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
+                  <input type="number" min={p.min_order||1} max={p.stock} defaultValue={p.min_order||1}
+                    id={`hs-${p.id}`} style={{width:70,textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}/>
+                  <div style={{fontSize:10,color:"var(--text3)"}}>MOQ: {p.min_order||1}</div>
+                </div>
+                <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} onClick={()=>{
+                  const inp=document.getElementById(`hs-${p.id}`);
+                  const val=Math.max(p.min_order||1,Math.min(p.stock,parseInt(inp?.value)||p.min_order||1));
+                  addToCart(p,val);
+                }}>{qty>0?"➕ Add More":"Add to Cart"}</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -4032,6 +4270,7 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
   };
 
   const filteredOrders = useMemo(()=>orders.filter(o=>{
+    if(o.type==="consignment") return false;
     if(o.status==="cancelled"||o.status==="order"||o.status==="partial_shipped") return false;
     if(o.date < fromDate || o.date > toDate) return false;
     if(keyword) {
@@ -4838,8 +5077,8 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
   const exportCSV=()=>{
     const rows=[
       ["Invoice",order.id],["Customer",order.customer_name],["Date",order.date],["Status",order.status],["Payment",order.payment_method||"—"],[""],
-      ["Product","Barcode","Ordered","Shipped","Backordered","Unit Price","Total"],
-      ...(order.items||[]).map(i=>{const s=i.qty_shipped??i.qty; return [i.name,i.barcode||"—",i.qty,s,i.qty-s,i.unit_price,s*i.unit_price];}),
+      ["Product","Barcode","Qty","Unit Price","Total"],
+      ...(order.items||[]).map(i=>[i.name,i.barcode||"—",i.qty,i.unit_price,i.qty*i.unit_price]),
       [""],["Subtotal","",""," ",order.subtotal],[`GCT (${order.tax_rate}%)`,""," ","",order.tax_amount],["Total","","","",order.total]
     ];
     downloadCSV(rows,`${order.id}.csv`);
@@ -4851,7 +5090,7 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
         <h2>Invoice {order.id}</h2>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ Excel/CSV</button>}
-          {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings)}>🖨 PDF/Print</button>}
+          <button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings,isConsignment)}>🖨 PDF/Print</button>
           <button className="xbtn" onClick={onClose}>✕</button>
         </div>
       </div>
@@ -4874,8 +5113,7 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
         <div className="tbl-wrap" style={{marginBottom:16}}>
           <table>
             <thead><tr>
-              <th>Barcode</th>
-              <th>Product</th>
+              <th>Barcode</th><th>Product</th>
               <th style={{textAlign:"center"}}>Ordered</th>
               <th style={{textAlign:"center"}}>Shipped</th>
               <th style={{textAlign:"center"}}>Backordered</th>
@@ -4886,20 +5124,19 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
               const shipped = item.qty_shipped ?? item.qty;
               const backordered = item.qty - shipped;
               return (
-              <tr key={i}>
-                <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
-                <td style={{fontWeight:500}}>{item.name}</td>
-                <td style={{textAlign:"center"}}>{item.qty}</td>
-                <td style={{textAlign:"center",color:"var(--success)",fontWeight:600}}>{shipped}</td>
-                <td style={{textAlign:"center"}}>
-                  {backordered > 0
-                    ? <span style={{color:"var(--warn)",fontWeight:600}}>{backordered}</span>
-                    : <span style={{color:"var(--text3)"}}>—</span>}
-                </td>
-                {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
-                {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(shipped*item.unit_price)}</td>}
-              </tr>
-            )})}</tbody>
+                <tr key={i}>
+                  <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
+                  <td style={{fontWeight:500}}>{item.name}</td>
+                  <td style={{textAlign:"center"}}>{item.qty}</td>
+                  <td style={{textAlign:"center",color:"var(--success)",fontWeight:600}}>{shipped}</td>
+                  <td style={{textAlign:"center"}}>
+                    {backordered>0?<span style={{color:"var(--warn)",fontWeight:600}}>{backordered}</span>:<span style={{color:"var(--text3)"}}>—</span>}
+                  </td>
+                  {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
+                  {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(shipped*item.unit_price)}</td>}
+                </tr>
+              );
+            })}</tbody>
           </table>
         </div>
 
