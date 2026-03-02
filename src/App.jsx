@@ -632,15 +632,17 @@ export default function App() {
     setUser(null); setCart([]);
   };
 
+  // staffPerms must be here (before early returns) to satisfy Rules of Hooks
+  const staffPerms = useMemo(()=>{
+    if(!user || user.role !== "staff") return [];
+    try { return JSON.parse(user.permissions||"[]"); } catch { return []; }
+  },[user]);
+
   if (loading) return <><style dangerouslySetInnerHTML={{__html:STYLES}}/><div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)"}}><div style={{textAlign:"center"}}><img src={LOGO_SRC} style={{width:200,marginBottom:20}}/><div style={{color:"var(--text3)"}}>Loading…</div></div></div></>;
   if (!user) return <><style dangerouslySetInnerHTML={{__html:STYLES}}/><LoginPage onLogin={login}/></>;
 
   const isAdmin = user.role === "admin";
   const isStaff = user.role === "staff";
-  const staffPerms = useMemo(()=>{
-    if(!isStaff) return null;
-    try { return JSON.parse(user.permissions||"[]"); } catch { return []; }
-  },[user,isStaff]);
   const canAccess = (moduleId) => {
     if(isAdmin) return true;
     if(isStaff) return (staffPerms||[]).includes(moduleId);
@@ -780,39 +782,6 @@ export default function App() {
     if(!isStaff) return adminNav;
     return adminNav.map(s=>({...s,items:s.items.filter(item=>canAccess(item.id))})).filter(s=>s.items.length>0);
   },[isStaff,staffPerms]);
-  const adminNav_UNUSED = [
-    {section:"Overview", items:[{id:"dashboard",icon:"📊",label:"Dashboard"}]},
-    {section:"Inventory", items:[
-      {id:"products",icon:"📦",label:"Products"},
-      {id:"purchaseorders",icon:"🛒",label:"Purchase Orders"},
-      {id:"categories",icon:"🏷️",label:"Categories"},
-      {id:"suppliers",icon:"🏭",label:"Suppliers"},
-      {id:"stocktake",icon:"📋",label:"Stock Take"},
-      {id:"transfers",icon:"🏪",label:"Store Transfers"},
-    ]},
-    {section:"Sales", items:[
-      {id:"orders",icon:"📋",label:"Orders"},
-      {id:"backorders",icon:"⏳",label:"Back Orders"},
-      {id:"invoices",icon:"🧾",label:"Invoices"},
-      {id:"carts",icon:"🛒",label:"Customer Carts"},
-      {id:"clearance",icon:"🔥",label:"Clearance"},
-    ]},
-    {section:"Accounts", items:[
-      {id:"customers",icon:"👥",label:"Customers"},
-      {id:"salesreps",icon:"🤝",label:"Sales Reps"},
-    ]},
-    {section:"Reports", items:[
-      {id:"analytics",icon:"📈",label:"Analytics"},
-      {id:"activitylog",icon:"🕐",label:"Activity Log"},
-    ]},
-    {section:"System", items:[
-      {id:"settings",icon:"⚙️",label:"Settings"},
-      {id:"stores",icon:"🏬",label:"Store Locations"},
-      {id:"staff",icon:"🔑",label:"Staff Accounts"},
-      {id:"account",icon:"👤",label:"My Account"},
-    ]},
-  ];
-
   const buyerNav = [
     {section:"Shop", items:[
       {id:"catalog",icon:"🏪",label:"Catalog"},
