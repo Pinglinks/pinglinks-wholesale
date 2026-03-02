@@ -1069,7 +1069,9 @@ function DashboardPage({ products, orders, customers, transfers, settings, setPa
                 <tr key={o.id}>
                   <td><code>{o.id}</code></td>
                   <td style={{fontSize:12}}>{o.customer_name}</td>
-                  <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
+                  <td style={{fontWeight:600,color:"var(--accent)"}}>
+                    {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
+                  </td>
                   <td><StatusBadge status={o.status}/></td>
                 </tr>
               ))}
@@ -1355,7 +1357,8 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                     <td>
                       <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
                         {p.is_new_arrival&&<span className="badge bg" style={{fontSize:9}}>NEW</span>}
-                        {p.is_clearance&&<span className="badge bo" style={{fontSize:9}}>CLEARANCE</span>}
+                        {p.is_clearance&&<span className="badge bo" style={{fontSize:9}}>🔥 CLEARANCE</span>}
+                        {p.is_hot_seller&&<span className="badge" style={{fontSize:9,background:"#fef9c3",color:"#854d0e",border:"1px solid #fde047"}}>⭐ HOT</span>}
                         {!p.active&&<span className="badge br" style={{fontSize:9}}>ARCHIVED</span>}
                         {p.wholesale_visible===false&&<span className="badge" style={{fontSize:9,background:"var(--warn)22",color:"var(--warn)"}}>HIDDEN</span>}
                       </div>
@@ -1393,7 +1396,8 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false,
       clearance_price:data.clearance_price||null,
-      wholesale_visible:data.wholesale_visible!==false
+      wholesale_visible:data.wholesale_visible!==false,
+      is_hot_seller:data.is_hot_seller||false
     };
     // Duplicate barcode check — exclude this product from check
     if(payload.barcode){
@@ -1420,6 +1424,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false, clearance_price:data.clearance_price||null,
       wholesale_visible:data.wholesale_visible!==false,
+      is_hot_seller:data.is_hot_seller||false,
       active:true, created_at:new Date().toISOString()
     };
     const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
@@ -1628,7 +1633,8 @@ function ProductModal({ product, categories, onSave, onClose }) {
             <div className="form-group"><label>Clearance Price (J$)</label><input type="number" value={f.clearance_price} onChange={e=>s("clearance_price",e.target.value)} placeholder="Leave blank if not clearance"/></div>
           </div>
           <div style={{display:"flex",gap:24,marginTop:4,flexWrap:"wrap"}}>
-            <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> Mark as Clearance</label>
+            <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> 🔥 Mark as Clearance</label>
+            <label className="checkbox-row"><input type="checkbox" checked={f.is_hot_seller||false} onChange={e=>s("is_hot_seller",e.target.checked)}/> ⭐ Hot Seller</label>
             <label className="checkbox-row" title="Uncheck to hide this product from customer catalog, clearance, and arriving soon pages">
               <input type="checkbox" checked={f.wholesale_visible} onChange={e=>s("wholesale_visible",e.target.checked)}/>
               {f.wholesale_visible
@@ -2402,7 +2408,9 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
+                <td style={{fontWeight:600,color:"var(--accent)"}}>
+                  {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
+                </td>
                 <td><StatusBadge status={o.status}/></td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>📋 View & Ship</button>
@@ -2863,7 +2871,7 @@ function ClearancePage({ products, isAdmin, addToCart, user, cart }) {
                   <span className="prod-ws">{fmt(price)}</span>
                   {p.clearance_price&&<span className="prod-retail">{fmt(p.wholesale_price)}</span>}
                 </div>}
-                <div className="prod-srp">SRP: {fmt(p.retail_price)}</div>
+                {!isConsignment&&p.retail_price>0&&<div className="prod-srp">SRP: {fmt(p.retail_price)}</div>}
                 <div className="prod-stock">{p.stock} in stock · MOQ: {p.min_order||1}{qty>0?` · ${qty} in cart`:""}</div>
                 {!isAdmin&&user?.approved&&<>
                   <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,marginTop:8}}>
@@ -4564,9 +4572,7 @@ function StaffPage({ showToast }) {
           </table></div>
         )}
       </div>
-      <div className="card"><div className="card-body" style={{fontSize:12,color:"var(--text2)"}}>
-        <strong>Setup:</strong> Run this SQL once: <code style={{background:"var(--bg3)",padding:"2px 6px",borderRadius:4}}>ALTER TABLE profiles ADD COLUMN IF NOT EXISTS permissions jsonb DEFAULT '[]';</code>
-      </div></div>
+
     </div>
   );
 }
