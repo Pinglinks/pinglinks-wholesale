@@ -632,22 +632,10 @@ export default function App() {
     setUser(null); setCart([]);
   };
 
-  // staffPerms must be here (before early returns) to satisfy Rules of Hooks
-  const staffPerms = useMemo(()=>{
-    if(!user || user.role !== "staff") return [];
-    try { return JSON.parse(user.permissions||"[]"); } catch { return []; }
-  },[user]);
-
   if (loading) return <><style dangerouslySetInnerHTML={{__html:STYLES}}/><div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)"}}><div style={{textAlign:"center"}}><img src={LOGO_SRC} style={{width:200,marginBottom:20}}/><div style={{color:"var(--text3)"}}>Loading…</div></div></div></>;
   if (!user) return <><style dangerouslySetInnerHTML={{__html:STYLES}}/><LoginPage onLogin={login}/></>;
 
   const isAdmin = user.role === "admin";
-  const isStaff = user.role === "staff";
-  const canAccess = (moduleId) => {
-    if(isAdmin) return true;
-    if(isStaff) return (staffPerms||[]).includes(moduleId);
-    return false;
-  };
 
   // ── Cart helpers ──
   const cartCount = cart.reduce((s,i)=>s+i.qty,0);
@@ -725,27 +713,17 @@ export default function App() {
     try { await supabase.from("customer_carts").upsert({customer_id:user.id,items:"[]",item_count:0,subtotal:0,status:"converted",updated_at:new Date().toISOString()},{onConflict:"customer_id"}); } catch(e) {}
     setCustomerCarts(prev=>prev.map(c=>c.customer_id===user.id?{...c,items:"[]",item_count:0,status:"converted"}:c));
     try {
-      fetch(`${SUPABASE_URL}/functions/v1/notify-admin`, {
+      fetch(`${SUPABASE_URL}/functions/v1/notify-admin`,{
         method:"POST",
         headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`},
-        body:JSON.stringify({
-          type:"new_order",
-          orderId:id,
-          customerName:customer?.company||user.name,
-          customerEmail:user.email,
-          orderType:orderType||"standard",
-          items:cart.map(i=>`${i.qty}× ${i.name}`).join("\n"),
-          total:(orderType==="consignment")?"Consignment (pricing TBD)":`J$${cartTotal.toLocaleString()}`,
-          paymentMethod:payMethod||"—",
-          notes:notes||""
-        })
+        body:JSON.stringify({type:"new_order",orderId:id,customerName:customer?.company||user.name,customerEmail:user.email,orderType:orderType||"standard",total:(orderType==="consignment")?"Consignment":("J$"+cartTotal.toLocaleString()),items:cart.map(i=>i.qty+"x "+i.name).join(", "),notes:notes||""})
       }).catch(()=>{});
     } catch(e){}
     setModal({type:"orderSuccess",data:o});
   };
 
   // ── Nav ──
-  const buildAdminNav = () => [
+  const adminNav = [
     {section:"Overview", items:[{id:"dashboard",icon:"📊",label:"Dashboard"}]},
     {section:"Inventory", items:[
       {id:"products",icon:"📦",label:"Products"},
@@ -777,11 +755,7 @@ export default function App() {
       {id:"account",icon:"👤",label:"My Account"},
     ]},
   ];
-  const adminNav = buildAdminNav();
-  const filteredAdminNav = useMemo(()=>{
-    if(!isStaff) return adminNav;
-    return adminNav.map(s=>({...s,items:s.items.filter(item=>canAccess(item.id))})).filter(s=>s.items.length>0);
-  },[isStaff,staffPerms]);
+
   const buyerNav = [
     {section:"Shop", items:[
       {id:"catalog",icon:"🏪",label:"Catalog"},
@@ -806,7 +780,7 @@ export default function App() {
             <div className="sub">Wholesale Portal</div>
           </div>
           <nav className="sidebar-nav">
-            {((isAdmin||isStaff)?(filteredAdminNav):buyerNav).map(sec=>(
+            {(isAdmin?adminNav:buyerNav).map(sec=>(
               <div className="nav-section" key={sec.section}>
                 <div className="nav-label">{sec.section}</div>
                 {sec.items.map(item=>(
@@ -944,7 +918,7 @@ function LoginPage({ onLogin }) {
       options: { data: { name: reg.name, company: reg.company, tax_id: reg.taxId, role: "buyer", sales_rep_id: reg.salesRepId||null } }
     });
     if (error) { setErr(error.message); setBusy(false); return; }
-    // Send email notification for new account application
+    // Send email notification
     fetch(`${SUPABASE_URL}/functions/v1/notify-admin`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
@@ -1361,11 +1335,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                 return (
                   <tr key={p.id} style={{opacity:p.active?1:.5}}>
                     <td><input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggleSelect(p.id)}/></td>
-                    <td>
-                      {p.image_url
-                        ?<img src={p.image_url} alt="" style={{width:36,height:36,objectFit:"cover",borderRadius:6,border:"1px solid var(--border)",display:"block"}} onError={e=>{e.target.style.display="none";}}/>
-                        :<div style={{width:36,height:36,borderRadius:6,border:"1px dashed var(--border)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"var(--text3)"}}>📷</div>}
-                    </td>
+                    <td>{p.image_url?<img src={p.image_url} alt="" style={{width:36,height:36,objectFit:"cover",borderRadius:6,border:"1px solid var(--border)"}} onError={e=>{e.target.style.display="none";}}/>:<div style={{width:36,height:36,borderRadius:6,border:"1px dashed var(--border)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>📷</div>}</td>
                     <td><code style={{fontSize:10}}>{p.barcode||"—"}</code></td>
                     <td style={{fontSize:12}}>{p.brand||"—"}</td>
                     <td>
@@ -1385,8 +1355,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                     <td>
                       <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
                         {p.is_new_arrival&&<span className="badge bg" style={{fontSize:9}}>NEW</span>}
-                        {p.is_clearance&&<span className="badge bo" style={{fontSize:9}}>🔥 CLEARANCE</span>}
-                        {p.is_hot_seller&&<span className="badge" style={{fontSize:9,background:"#fef9c3",color:"#854d0e",border:"1px solid #fde047"}}>⭐ HOT</span>}
+                        {p.is_clearance&&<span className="badge bo" style={{fontSize:9}}>CLEARANCE</span>}
                         {!p.active&&<span className="badge br" style={{fontSize:9}}>ARCHIVED</span>}
                         {p.wholesale_visible===false&&<span className="badge" style={{fontSize:9,background:"var(--warn)22",color:"var(--warn)"}}>HIDDEN</span>}
                       </div>
@@ -1424,8 +1393,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false,
       clearance_price:data.clearance_price||null,
-      wholesale_visible:data.wholesale_visible!==false,
-      is_hot_seller:data.is_hot_seller||false
+      wholesale_visible:data.wholesale_visible!==false
     };
     // Duplicate barcode check — exclude this product from check
     if(payload.barcode){
@@ -1452,7 +1420,6 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       description:data.description||"", image_url:data.image_url||null,
       is_clearance:data.is_clearance||false, clearance_price:data.clearance_price||null,
       wholesale_visible:data.wholesale_visible!==false,
-      is_hot_seller:data.is_hot_seller||false,
       active:true, created_at:new Date().toISOString()
     };
     const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
@@ -1583,9 +1550,7 @@ function ProductModal({ product, categories, onSave, onClose }) {
     low_stock_threshold:product?.low_stock_threshold||5, min_order:product?.min_order||1,
     description:product?.description||"", image_url:product?.image_url||"",
     is_clearance:product?.is_clearance||false, clearance_price:product?.clearance_price||"",
-    wholesale_visible:product?.wholesale_visible!==false,
-    is_hot_seller:product?.is_hot_seller||false,
-    newCatName:"", addingCat:false
+    wholesale_visible:product?.wholesale_visible!==false  // default true
   });
   const [uploading, setUploading] = useState(false);
   const imgRef = useRef();
@@ -1646,17 +1611,9 @@ function ProductModal({ product, categories, onSave, onClose }) {
                 <div className="form-group"><label>Brand</label><input value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
               </div>
               <div className="form-group"><label>Category</label>
-                <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                  <select value={f.category} onChange={e=>{if(e.target.value==="__new__"){s("addingCat",true);}else{s("category",e.target.value);s("addingCat",false);}}} style={{flex:1}}>
+                  <select value={f.category} onChange={e=>s("category",e.target.value)}>
                     {categories.map(c=><option key={c}>{c}</option>)}
-                    <option value="__new__">+ Add new category…</option>
                   </select>
-                </div>
-                {f.addingCat&&<div style={{display:"flex",gap:6,marginTop:6}}>
-                  <input placeholder="New category name" value={f.newCatName} onChange={e=>s("newCatName",e.target.value)} style={{flex:1}}/>
-                  <button type="button" className="btn btn-primary btn-sm" onClick={()=>{if(f.newCatName.trim()){s("category",f.newCatName.trim());s("addingCat",false);s("newCatName","");}}}>Add</button>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={()=>{s("addingCat",false);s("newCatName","");}}>✕</button>
-                </div>}
               </div>
             </div>
           </div>
@@ -1671,8 +1628,7 @@ function ProductModal({ product, categories, onSave, onClose }) {
             <div className="form-group"><label>Clearance Price (J$)</label><input type="number" value={f.clearance_price} onChange={e=>s("clearance_price",e.target.value)} placeholder="Leave blank if not clearance"/></div>
           </div>
           <div style={{display:"flex",gap:24,marginTop:4,flexWrap:"wrap"}}>
-            <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> 🔥 Clearance</label>
-            <label className="checkbox-row"><input type="checkbox" checked={f.is_hot_seller} onChange={e=>s("is_hot_seller",e.target.checked)}/> ⭐ Hot Seller</label>
+            <label className="checkbox-row"><input type="checkbox" checked={f.is_clearance} onChange={e=>s("is_clearance",e.target.checked)}/> Mark as Clearance</label>
             <label className="checkbox-row" title="Uncheck to hide this product from customer catalog, clearance, and arriving soon pages">
               <input type="checkbox" checked={f.wholesale_visible} onChange={e=>s("wholesale_visible",e.target.checked)}/>
               {f.wholesale_visible
@@ -1694,8 +1650,7 @@ function ProductModal({ product, categories, onSave, onClose }) {
               low_stock_threshold:parseInt(f.low_stock_threshold)||5,
               min_order:parseInt(f.min_order)||1,
               clearance_price:f.clearance_price&&String(f.clearance_price).trim()!==""?parseFloat(f.clearance_price):null,
-              wholesale_visible:f.wholesale_visible!==false,
-              is_hot_seller:f.is_hot_seller||false
+              wholesale_visible:f.wholesale_visible!==false
             });
           }}>{uploading?"Uploading…":"Save Product"}</button>
         </div>
@@ -2240,11 +2195,11 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
                   <tbody>{tr.items.map((item,i)=>(
                     <tr key={i}><td><code style={{fontSize:10}}>{item.sku}</code></td><td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td><td style={{fontSize:12}}>{item.name}</td><td>{item.qty}</td><td>{fmt(item.cost)}</td><td style={{fontWeight:600}}>{fmt(item.qty*item.cost)}</td></tr>
                   ))}
-                  {tr.items.length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)"}}>
-                    <td colSpan={3} style={{fontWeight:700,fontSize:12}}>TOTALS</td>
-                    <td style={{fontWeight:700,color:"var(--accent)"}}>{tr.items.reduce((s,i)=>s+i.qty,0)}</td>
+                  {tr.items.length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
+                    <td colSpan={3}>TOTALS</td>
+                    <td style={{color:"var(--accent)"}}>{tr.items.reduce((s,i)=>s+i.qty,0)}</td>
                     <td></td>
-                    <td style={{fontWeight:700,color:"var(--accent)"}}>{fmt(tr.items.reduce((s,i)=>s+i.qty*i.cost,0))}</td>
+                    <td style={{color:"var(--accent)"}}>{fmt(tr.items.reduce((s,i)=>s+i.qty*i.cost,0))}</td>
                   </tr>}
                   </tbody>
                 </table>
@@ -2403,7 +2358,7 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
 function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, settings, showToast, products, setProducts }) {
   const [search, setSearch] = useState("");
   const [filterDate, setFilterDate] = useState("");
-  const [viewOrder, setViewOrder] = useState(null);
+  const [shipModal, setShipModal] = useState(null);
 
   const activeOrders = useMemo(() => orders.filter(o => {
     if (o.status !== "order" && o.status !== "partial_shipped") return false;
@@ -2415,11 +2370,6 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
 
   const { sorted, key, dir, toggle } = useSort(activeOrders, "date");
   const pg = usePagination(sorted, 20);
-
-  if (viewOrder) {
-    const fresh = orders.find(o=>o.id===viewOrder.id)||viewOrder;
-    return <OrderDetailPage order={fresh} orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} products={products} setProducts={setProducts} customers={customers} settings={settings} showToast={showToast} onBack={()=>setViewOrder(null)}/>;
-  }
 
   return (
     <>
@@ -2452,12 +2402,10 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>
-                  {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
-                </td>
+                <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
                 <td><StatusBadge status={o.status}/></td>
                 <td><div className="tbl-actions">
-                  <button className="btn btn-primary btn-xs" onClick={()=>setViewOrder(o)}>📋 View Order</button>
+                  <button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>📋 View & Ship</button>
                 </div></td>
               </tr>
             ))}
@@ -2470,251 +2418,22 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
           <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage}/>
         </div>
       </div>
-    </>
-  );
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ─── ORDER DETAIL PAGE ────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-function OrderDetailPage({ order, orders, setOrders, backorders, setBackorders, products, setProducts, customers, settings, showToast, onBack }) {
-  const customer = customers.find(c=>c.id===order.customer_id);
-  const isConsignment = order.type==="consignment"||customer?.customer_type==="consignment";
-  const [shipQtys, setShipQtys] = useState(()=>{
-    const init={};
-    (order.items||[]).forEach(item=>{ init[item.product_id]=item.qty_shipped??item.qty; });
-    return init;
-  });
-  const [hideCosts, setHideCosts] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [showAddProduct, setShowAddProduct] = useState(false);
-  const [addSearch, setAddSearch] = useState("");
-  const [addItems, setAddItems] = useState([]);
-  const [addingToOrder, setAddingToOrder] = useState(false);
-
-  const lineItems = (order.items||[]).map(item=>{
-    const toShip=Math.max(0,Math.min(parseInt(shipQtys[item.product_id])||0,item.qty));
-    const backordered=item.qty-toShip;
-    const prod=products.find(p=>p.id===item.product_id);
-    return {...item,toShip,backordered,cost:prod?.cost||0};
-  });
-
-  const pickerResults = products.filter(p=>p.active&&addSearch.length>1&&(
-    p.name?.toLowerCase().includes(addSearch.toLowerCase())||
-    p.barcode?.includes(addSearch)||
-    p.brand?.toLowerCase().includes(addSearch.toLowerCase())
-  )).filter(p=>!addItems.find(i=>i.product_id===p.id)&&!order.items?.find(i=>i.product_id===p.id)).slice(0,12);
-
-  const addToNewItems = (prod) => {
-    setAddItems(prev=>[...prev,{product_id:prod.id,name:prod.name,barcode:prod.barcode||"",qty:prod.min_order||1,unit_price:prod.wholesale_price||0,cost:prod.cost||0}]);
-    setAddSearch("");
-  };
-
-  const saveAddedItems = async () => {
-    if(!addItems.length) return;
-    setAddingToOrder(true);
-    try {
-      const newRows=addItems.map(i=>({order_id:order.id,product_id:i.product_id,name:i.name,qty:i.qty,unit_price:i.unit_price,barcode:i.barcode,sku:""}));
-      await supabase.from("order_items").insert(newRows);
-      const addSubtotal=addItems.reduce((s,i)=>s+i.qty*i.unit_price,0);
-      const newSubtotal=(order.subtotal||0)+addSubtotal;
-      const newTax=Math.round(newSubtotal*(order.tax_rate||15)/100);
-      const newTotal=newSubtotal+newTax;
-      await supabase.from("orders").update({total:newTotal,subtotal:newSubtotal,tax_amount:newTax}).eq("id",order.id);
-      setShipQtys(prev=>{const n={...prev};addItems.forEach(i=>{n[i.product_id]=i.qty;});return n;});
-      setOrders(prev=>prev.map(o=>o.id===order.id?{...o,items:[...(o.items||[]),...addItems],total:newTotal,subtotal:newSubtotal,tax_amount:newTax}:o));
-      setAddItems([]);
-      setShowAddProduct(false);
-      showToast(`${addItems.length} item${addItems.length!==1?"s":""} added to order`);
-    } catch(e){console.error(e);showToast("Error adding items","err");}
-    setAddingToOrder(false);
-  };
-
-  const handleComplete = async () => {
-    if(!confirm(`Complete order ${order.id}? This will finalise ship quantities, create backorders for remainder, and convert to Invoice.`)) return;
-    setBusy(true);
-    try {
-      for(const item of lineItems){
-        const prevShipped=order.items.find(i=>i.product_id===item.product_id)?.qty_shipped??0;
-        const additionalShip=Math.max(0,item.toShip-prevShipped);
-        if(additionalShip>0){
-          const {data:prod}=await supabase.from("products").select("stock").eq("id",item.product_id).single();
-          if(prod){
-            const newStock=Math.max(0,prod.stock-additionalShip);
-            await supabase.from("products").update({stock:newStock}).eq("id",item.product_id);
-            setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:newStock}:p));
-          }
-        }
-        if(item.toShip>0) await supabase.from("order_items").update({qty_shipped:item.toShip}).eq("order_id",order.id).eq("product_id",item.product_id);
-        if(item.backordered>0){
-          const existing=backorders.find(b=>b.order_id===order.id&&b.product_id===item.product_id&&b.status==="open");
-          if(existing){
-            await supabase.from("backorders").update({qty_shipped:item.toShip,qty_remaining:item.backordered}).eq("id",existing.id);
-            setBackorders(prev=>prev.map(b=>b.id===existing.id?{...b,qty_shipped:item.toShip,qty_remaining:item.backordered}:b));
-          } else {
-            const {data:bo}=await supabase.from("backorders").insert({order_id:order.id,product_id:item.product_id,product_name:item.name,qty_ordered:item.qty,qty_shipped:item.toShip,qty_remaining:item.backordered,unit_price:item.unit_price,barcode:item.barcode||"",status:"open",created_at:new Date().toISOString()}).select().single();
-            if(bo) setBackorders(prev=>[...prev,bo]);
-          }
-        }
-      }
-      await supabase.from("orders").update({status:"invoiced"}).eq("id",order.id);
-      setOrders(prev=>prev.map(o=>o.id===order.id?{...o,status:"invoiced",items:o.items.map(i=>({...i,qty_shipped:shipQtys[i.product_id]??i.qty}))}:o));
-      const hasBO=lineItems.some(i=>i.backordered>0);
-      showToast(hasBO?`${order.id} invoiced — ${lineItems.filter(i=>i.backordered>0).length} item(s) backordered`:`${order.id} fully shipped → Invoice ✓`);
-      onBack();
-    } catch(e){console.error(e);showToast("Error completing order","err");}
-    setBusy(false);
-  };
-
-  const shippedSubtotal=lineItems.reduce((s,i)=>s+i.toShip*i.unit_price,0);
-  const shippedTax=Math.round(shippedSubtotal*(order.tax_rate||15)/100);
-  const existingBOs=backorders.filter(b=>b.order_id===order.id&&b.status==="open");
-  const totalOrdered=lineItems.reduce((s,i)=>s+i.qty,0);
-  const totalShipping=lineItems.reduce((s,i)=>s+i.toShip,0);
-  const totalBO=lineItems.reduce((s,i)=>s+i.backordered,0);
-
-  return (
-    <div>
-      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20,flexWrap:"wrap"}}>
-        <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back to Orders</button>
-        <div style={{fontFamily:"Syne",fontWeight:700,fontSize:20}}>{order.id}</div>
-        <StatusBadge status={order.status}/>
-        <span className={`badge ${isConsignment?"bo":"bb"}`}>{order.type||"standard"}</span>
-      </div>
-      <div className="card" style={{marginBottom:14}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,padding:16}}>
-          <div><div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Customer</div>
-            <div style={{fontWeight:700}}>{customer?.company||order.customer_name}</div>
-            <div style={{fontSize:12,color:"var(--text2)"}}>{customer?.email}</div></div>
-          <div><div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Order Info</div>
-            <div style={{fontSize:13}}>{order.date} · {order.payment_method||"—"}</div></div>
-          <div><div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Notes</div>
-            <div style={{fontSize:12,color:"var(--text2)"}}>{order.notes||"—"}</div></div>
-        </div>
-      </div>
-      <div className="card" style={{marginBottom:14}}>
-        <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-          <h3 style={{margin:0}}>Order Items — Enter Ship Quantities</h3>
-          <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <label className="checkbox-row" style={{fontSize:12,gap:6,margin:0}}>
-              <input type="checkbox" checked={hideCosts} onChange={e=>setHideCosts(e.target.checked)}/>Hide costs
-            </label>
-            <button className="btn btn-secondary btn-sm" onClick={()=>setShowAddProduct(v=>!v)}>
-              {showAddProduct?"✕ Cancel":"➕ Add Product to Order"}
-            </button>
-          </div>
-        </div>
-        {showAddProduct&&(
-          <div style={{padding:16,borderBottom:"1px solid var(--border)",background:"var(--bg3)"}}>
-            <div style={{fontSize:13,fontWeight:600,marginBottom:10}}>Add Products to Order</div>
-            <div className="search-wrap" style={{marginBottom:10}}>
-              <span className="search-icon">🔍</span>
-              <input value={addSearch} onChange={e=>setAddSearch(e.target.value)} placeholder="Search by name, barcode, brand…"/>
-            </div>
-            {pickerResults.length>0&&(
-              <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,marginBottom:10,maxHeight:200,overflowY:"auto"}}>
-                {pickerResults.map(p=>(
-                  <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",borderBottom:"1px solid var(--border)",cursor:"pointer"}} onClick={()=>addToNewItems(p)}>
-                    {p.image_url&&<img src={p.image_url} style={{width:28,height:28,objectFit:"cover",borderRadius:4}} alt=""/>}
-                    <div style={{flex:1}}>
-                      <div style={{fontWeight:500,fontSize:13}}>{p.name}</div>
-                      <div style={{fontSize:11,color:"var(--text3)"}}>{p.barcode||""} · {fmt(p.wholesale_price)} · Stock: {p.stock}</div>
-                    </div>
-                    <button className="btn btn-primary btn-xs">Add</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {addItems.length>0&&(
-              <>
-                <div style={{fontWeight:600,fontSize:12,marginBottom:8}}>Items to add:</div>
-                <div className="tbl-wrap">
-                  <table>
-                    <thead><tr><th>Product</th><th>Barcode</th><th style={{textAlign:"center"}}>Qty</th>{!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}<th></th></tr></thead>
-                    <tbody>{addItems.map((item,i)=>(
-                      <tr key={i}>
-                        <td style={{fontWeight:500}}>{item.name}</td>
-                        <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
-                        <td style={{textAlign:"center"}}>
-                          <input type="number" min={1} value={item.qty}
-                            onChange={e=>setAddItems(prev=>prev.map((x,xi)=>xi===i?{...x,qty:Math.max(1,parseInt(e.target.value)||1)}:x))}
-                            style={{width:60,textAlign:"center",padding:"3px 6px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg2)"}}/>
-                        </td>
-                        {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
-                        <td><button className="btn btn-danger btn-xs" onClick={()=>setAddItems(prev=>prev.filter((_,xi)=>xi!==i))}>✕</button></td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-                <div style={{display:"flex",justifyContent:"flex-end",marginTop:10,gap:8}}>
-                  <button className="btn btn-secondary btn-sm" onClick={()=>setAddItems([])}>Clear</button>
-                  <button className="btn btn-primary btn-sm" onClick={saveAddedItems} disabled={addingToOrder}>{addingToOrder?"Saving…":"Save Items to Order"}</button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-        <div className="tbl-wrap">
-          <table>
-            <thead><tr>
-              <th>Product</th>
-              <th style={{textAlign:"center"}}>Ordered</th>
-              {!hideCosts&&<th style={{textAlign:"right",color:"var(--text3)"}}>Unit Cost</th>}
-              {!isConsignment&&!hideCosts&&<th style={{textAlign:"right"}}>Unit Price</th>}
-              <th style={{textAlign:"center"}}>Ship Qty</th>
-              <th style={{textAlign:"center",color:"var(--warn)"}}>Backorder</th>
-            </tr></thead>
-            <tbody>
-              {lineItems.map(item=>(
-                <tr key={item.product_id}>
-                  <td><div style={{fontWeight:500}}>{item.name}</div>{item.barcode&&<div style={{fontSize:10,color:"var(--text3)"}}>{item.barcode}</div>}</td>
-                  <td style={{textAlign:"center",fontWeight:600}}>{item.qty}</td>
-                  {!hideCosts&&<td style={{textAlign:"right",color:"var(--text2)",fontSize:12}}>{fmt(item.cost)}</td>}
-                  {!isConsignment&&!hideCosts&&<td style={{textAlign:"right",color:"var(--accent)",fontWeight:600}}>{fmt(item.unit_price)}</td>}
-                  <td style={{textAlign:"center"}}>
-                    <input type="number" min={0} max={item.qty}
-                      value={shipQtys[item.product_id]??item.qty}
-                      onChange={e=>setShipQtys(p=>({...p,[item.product_id]:Math.min(item.qty,Math.max(0,parseInt(e.target.value)||0))}))}
-                      style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg3)",fontWeight:600}}/>
-                  </td>
-                  <td style={{textAlign:"center"}}>{item.backordered>0?<span style={{color:"var(--warn)",fontWeight:700,fontSize:15}}>{item.backordered}</span>:<span style={{color:"var(--success)"}}>✓</span>}</td>
-                </tr>
-              ))}
-              {lineItems.length>1&&(
-                <tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)"}}>
-                  <td style={{fontWeight:700,fontSize:12}}>TOTALS</td>
-                  <td style={{textAlign:"center",fontWeight:700,color:"var(--accent)"}}>{totalOrdered}</td>
-                  {!hideCosts&&<td></td>}
-                  {!isConsignment&&!hideCosts&&<td></td>}
-                  <td style={{textAlign:"center",fontWeight:700,color:"var(--accent)"}}>{totalShipping}</td>
-                  <td style={{textAlign:"center",fontWeight:700,color:totalBO>0?"var(--warn)":"var(--success)"}}>{totalBO>0?totalBO:"✓"}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        {!isConsignment&&!hideCosts&&(
-          <div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",display:"flex",gap:24,justifyContent:"flex-end",fontSize:13}}>
-            <span>Subtotal: <strong>{fmt(shippedSubtotal)}</strong></span>
-            <span>GCT ({order.tax_rate}%): <strong>{fmt(shippedTax)}</strong></span>
-            <span style={{fontWeight:700,color:"var(--accent)",fontSize:15}}>Total: {fmt(shippedSubtotal+shippedTax)}</span>
-          </div>
-        )}
-      </div>
-      {existingBOs.length>0&&(
-        <div className="card" style={{marginBottom:14}}>
-          <div style={{padding:"10px 16px",borderBottom:"1px solid var(--border)"}}><h3 style={{margin:0}}>⏳ Open Backorders for this Order</h3></div>
-          <div className="tbl-wrap"><table>
-            <thead><tr><th>Product</th><th style={{textAlign:"center"}}>Remaining</th></tr></thead>
-            <tbody>{existingBOs.map(b=>(<tr key={b.id}><td>{b.product_name}</td><td style={{textAlign:"center",color:"var(--warn)",fontWeight:600}}>{b.qty_remaining}</td></tr>))}</tbody>
-          </table></div>
-        </div>
+      {shipModal && (
+        <ShipOrderModal
+          order={shipModal}
+          orders={orders}
+          setOrders={setOrders}
+          backorders={backorders}
+          setBackorders={setBackorders}
+          products={products}
+          setProducts={setProducts}
+          settings={settings}
+          showToast={showToast}
+          onClose={()=>setShipModal(null)}
+        />
       )}
-      <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-        <button className="btn btn-secondary" onClick={onBack}>Cancel</button>
-        <button className="btn btn-primary" onClick={handleComplete} disabled={busy}>{busy?"Processing…":"✓ Complete & Generate Invoice"}</button>
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -2865,11 +2584,11 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
                 </tr>
               );
             })}
-            {lineItems.length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)"}}>
-              <td style={{fontWeight:700,fontSize:12}}>TOTALS</td>
-              <td style={{textAlign:"center",fontWeight:700,color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+i.qty,0)}</td>
-              <td style={{textAlign:"center",fontWeight:700,color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty)),0)}</td>
-              <td style={{textAlign:"center",fontWeight:700,color:"var(--warn)"}}>{lineItems.reduce((s,i)=>s+(i.qty-Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty))),0)||"—"}</td>
+            {lineItems.length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
+              <td>TOTALS</td>
+              <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+i.qty,0)}</td>
+              <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty)),0)}</td>
+              <td style={{textAlign:"center",color:"var(--warn)"}}>{lineItems.reduce((s,i)=>s+(i.qty-Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty))),0)||"—"}</td>
             </tr>}
             </tbody>
           </table>
@@ -3004,9 +2723,22 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
   const pg=usePagination(sorted,20);
 
   const updateStatus=async(id,status)=>{
+    const order = orders.find(o=>o.id===id);
+    // Deduct stock when admin marks as shipped (only once)
+    if(status==="shipped" && order?.status!=="shipped" && order?.status!=="delivered") {
+      for(const item of (order?.items||[])) {
+        const {data:prod} = await supabase.from("products").select("stock").eq("id",item.product_id).single();
+        if(prod) {
+          const newStock = Math.max(0, prod.stock - item.qty);
+          await supabase.from("products").update({stock:newStock}).eq("id",item.product_id);
+          setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:newStock}:p));
+        }
+      }
+      showToast("Order shipped — inventory deducted");
+    }
     await supabase.from("orders").update({status}).eq("id",id);
     setOrders(p=>p.map(o=>o.id===id?{...o,status}:o));
-    showToast("Status updated");
+    if(status!=="shipped") showToast("Status updated");
   };
 
   const exportCSV=()=>{
@@ -3050,9 +2782,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>
-                  {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
-                </td>
+                <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
                 <td>
                   <select value={o.status} onChange={e=>updateStatus(o.id,e.target.value)} style={{padding:"3px 6px",fontSize:11,width:"auto",background:"var(--bg3)"}}>
                     {["invoiced","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
@@ -3087,18 +2817,10 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
 // ─────────────────────────────────────────────────────────────────────────────
 function ClearancePage({ products, isAdmin, addToCart, user, cart }) {
   const [search,setSearch]=useState("");
-  const [filterCat,setFilterCat]=useState("All");
-  const [filterBrand,setFilterBrand]=useState("All");
   const [sortBy,setSortBy]=useState("name");
   const isConsignment=user?.customer_type==="consignment";
   const base=products.filter(p=>p.is_clearance&&p.active&&(isAdmin||p.stock>0)&&(isAdmin||p.wholesale_visible!==false));
-  const categories=["All",...Array.from(new Set(base.map(p=>p.category).filter(Boolean))).sort()];
-  const brands=["All",...Array.from(new Set(base.map(p=>p.brand).filter(Boolean))).sort()];
-  const items=base.filter(p=>{
-    const q=search.toLowerCase();
-    return (filterCat==="All"||p.category===filterCat)&&(filterBrand==="All"||p.brand===filterBrand)
-      &&(!q||p.name?.toLowerCase().includes(q)||p.barcode?.includes(q)||p.brand?.toLowerCase().includes(q));
-  }).sort((a,b)=>{
+  const items=base.filter(p=>!search||p.name?.toLowerCase().includes(search.toLowerCase())||p.barcode?.includes(search)||p.brand?.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>{
     if(sortBy==="price_asc") return (a.clearance_price||a.wholesale_price)-(b.clearance_price||b.wholesale_price);
     if(sortBy==="price_desc") return (b.clearance_price||b.wholesale_price)-(a.clearance_price||a.wholesale_price);
     if(sortBy==="stock") return b.stock-a.stock;
@@ -3109,28 +2831,19 @@ function ClearancePage({ products, isAdmin, addToCart, user, cart }) {
   return (
     <div>
       <div className="alert alert-warn mb-4">🔥 Clearance items — discounted prices while stock lasts!</div>
-      <div className="filter-bar" style={{flexWrap:"wrap",gap:8,marginBottom:12}}>
-        <div className="search-wrap" style={{flex:"1 1 180px"}}>
-          <span className="search-icon">🔍</span>
+      <div className="filter-bar" style={{gap:8,marginBottom:12}}>
+        <div className="search-wrap" style={{flex:1}}><span className="search-icon">🔍</span>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search clearance…"/>
         </div>
-        <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{width:"auto"}}>
-          <option value="All">All Categories</option>
-          {categories.filter(c=>c!=="All").map(c=><option key={c}>{c}</option>)}
-        </select>
-        <select value={filterBrand} onChange={e=>setFilterBrand(e.target.value)} style={{width:"auto"}}>
-          <option value="All">All Brands</option>
-          {brands.filter(b=>b!=="All").map(b=><option key={b}>{b}</option>)}
-        </select>
         <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{width:"auto"}}>
           <option value="name">Sort: A–Z</option>
-          <option value="price_asc">Sort: Price Low–High</option>
-          <option value="price_desc">Sort: Price High–Low</option>
-          <option value="stock">Sort: Most Stock</option>
+          <option value="price_asc">Price: Low–High</option>
+          <option value="price_desc">Price: High–Low</option>
+          <option value="stock">Most Stock</option>
         </select>
-        <span style={{fontSize:12,color:"var(--text3)",whiteSpace:"nowrap",alignSelf:"center"}}>{items.length} item{items.length!==1?"s":""}</span>
+        <span style={{fontSize:12,color:"var(--text3)",alignSelf:"center"}}>{items.length} items</span>
       </div>
-      {items.length===0&&<div className="empty"><div className="ei">🔥</div><p>No clearance items match your filters.</p></div>}
+      {items.length===0&&<div className="empty"><div className="ei">🔥</div><p>No clearance items match your search.</p></div>}
       <div className="prod-grid">
         {items.map(p=>{
           const discountPct=p.clearance_price&&p.wholesale_price?Math.round((1-p.clearance_price/p.wholesale_price)*100):0;
@@ -3185,24 +2898,17 @@ function ClearancePage({ products, isAdmin, addToCart, user, cart }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── HOT SELLERS PAGE ─────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function HotSellersPage({ products, user, addToCart, cart }) {
   const [search,setSearch]=useState("");
-  const [filterCat,setFilterCat]=useState("All");
-  const [filterBrand,setFilterBrand]=useState("All");
   const [sortBy,setSortBy]=useState("name");
   const isConsignment=user?.customer_type==="consignment";
   const base=products.filter(p=>p.is_hot_seller&&p.active&&p.stock>0&&p.wholesale_visible!==false);
-  const categories=["All",...Array.from(new Set(base.map(p=>p.category).filter(Boolean))).sort()];
-  const brands=["All",...Array.from(new Set(base.map(p=>p.brand).filter(Boolean))).sort()];
-  const items=base.filter(p=>{
-    const q=search.toLowerCase();
-    return (filterCat==="All"||p.category===filterCat)&&(filterBrand==="All"||p.brand===filterBrand)
-      &&(!q||p.name?.toLowerCase().includes(q)||p.barcode?.includes(q)||p.brand?.toLowerCase().includes(q));
-  }).sort((a,b)=>{
+  const items=base.filter(p=>!search||p.name?.toLowerCase().includes(search.toLowerCase())||p.barcode?.includes(search)).sort((a,b)=>{
     if(sortBy==="price_asc") return (a.wholesale_price||0)-(b.wholesale_price||0);
     if(sortBy==="price_desc") return (b.wholesale_price||0)-(a.wholesale_price||0);
     if(sortBy==="stock") return b.stock-a.stock;
@@ -3212,31 +2918,21 @@ function HotSellersPage({ products, user, addToCart, cart }) {
   if(!user?.approved) return <div className="empty"><div className="ei">⏳</div><h3>Account Pending Approval</h3></div>;
   return (
     <div>
-      <div className="alert alert-ok mb-4" style={{background:"#fef9c3",border:"1px solid #fde047",color:"#854d0e"}}>
-        ⭐ {items.length} hot seller{items.length!==1?"s":""} — our most popular items right now!
+      <div style={{background:"#fef9c3",border:"1px solid #fde047",color:"#854d0e",padding:"10px 14px",borderRadius:8,marginBottom:12,fontSize:13}}>
+        ⭐ {items.length} hot seller{items.length!==1?"s":""} — our most popular items!
       </div>
-      <div className="filter-bar" style={{flexWrap:"wrap",gap:8,marginBottom:12}}>
-        <div className="search-wrap" style={{flex:"1 1 180px"}}>
-          <span className="search-icon">🔍</span>
+      <div className="filter-bar" style={{gap:8,marginBottom:12}}>
+        <div className="search-wrap" style={{flex:1}}><span className="search-icon">🔍</span>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search hot sellers…"/>
         </div>
-        <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{width:"auto"}}>
-          <option value="All">All Categories</option>
-          {categories.filter(c=>c!=="All").map(c=><option key={c}>{c}</option>)}
-        </select>
-        <select value={filterBrand} onChange={e=>setFilterBrand(e.target.value)} style={{width:"auto"}}>
-          <option value="All">All Brands</option>
-          {brands.filter(b=>b!=="All").map(b=><option key={b}>{b}</option>)}
-        </select>
         <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{width:"auto"}}>
           <option value="name">Sort: A–Z</option>
-          <option value="price_asc">Sort: Price Low–High</option>
-          <option value="price_desc">Sort: Price High–Low</option>
-          <option value="stock">Sort: Most Stock</option>
+          <option value="price_asc">Price: Low–High</option>
+          <option value="price_desc">Price: High–Low</option>
+          <option value="stock">Most Stock</option>
         </select>
-        <span style={{fontSize:12,color:"var(--text3)",whiteSpace:"nowrap",alignSelf:"center"}}>{items.length} item{items.length!==1?"s":""}</span>
       </div>
-      {items.length===0&&<div className="empty"><div className="ei">⭐</div><p>No hot sellers match your filters.</p></div>}
+      {items.length===0&&<div className="empty"><div className="ei">⭐</div><p>No hot sellers match your search.</p></div>}
       <div className="prod-grid">
         {items.map(p=>{
           const qty=inCart(p.id);
@@ -3250,20 +2946,15 @@ function HotSellersPage({ products, user, addToCart, cart }) {
               <div className="prod-card-body">
                 <div className="prod-card-brand">{p.brand}</div>
                 <div className="prod-card-name">{p.name}</div>
-                {p.barcode&&<div style={{fontSize:10,color:"var(--text3)",marginBottom:4}}>Barcode: {p.barcode}</div>}
-                {!isConsignment&&<>
-                  <div className="prod-price-row"><span className="prod-ws">{fmt(price)}</span></div>
-                  {p.retail_price>0&&<div className="prod-srp">SRP: {fmt(p.retail_price)}</div>}
-                </>}
+                {!isConsignment&&<div className="prod-price-row"><span className="prod-ws">{fmt(price)}</span></div>}
                 <div className="prod-stock">{p.stock} in stock · MOQ: {p.min_order||1}{qty>0?` · ${qty} in cart`:""}</div>
                 <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,marginTop:8}}>
-                  <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>Qty:</div>
+                  <div style={{fontSize:11,color:"var(--text3)"}}>Qty:</div>
                   <input type="number" min={p.min_order||1} max={p.stock} defaultValue={p.min_order||1}
-                    id={`hs-${p.id}`} style={{width:70,textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}/>
-                  <div style={{fontSize:10,color:"var(--text3)"}}>MOQ: {p.min_order||1}</div>
+                    id={"hs-"+p.id} style={{width:70,textAlign:"center",padding:"4px 6px",border:"1px solid var(--border)",borderRadius:6,fontSize:13,fontWeight:600}}/>
                 </div>
                 <button className="btn btn-primary btn-sm" style={{width:"100%",justifyContent:"center"}} onClick={()=>{
-                  const inp=document.getElementById(`hs-${p.id}`);
+                  const inp=document.getElementById("hs-"+p.id);
                   const val=Math.max(p.min_order||1,Math.min(p.stock,parseInt(inp?.value)||p.min_order||1));
                   addToCart(p,val);
                 }}>{qty>0?"➕ Add More":"Add to Cart"}</button>
@@ -3276,7 +2967,6 @@ function HotSellersPage({ products, user, addToCart, cart }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // ─── CUSTOMERS PAGE ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function CustomersPage({ customers, setCustomers, orders, salesReps, showToast }) {
@@ -3616,65 +3306,56 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
         ))}
       </div>
 
-      {/* Batch import from template */}
       <div className="card" style={{marginBottom:16}}>
         <div className="card-header" style={{justifyContent:"space-between"}}>
           <h3>📥 Batch Import PO from Template</h3>
           <button className="btn btn-secondary btn-sm" onClick={()=>{
-            const rows=[
-              ["supplier_name","expected_date","lot_ref","barcode","product_name","ordered_qty","received_qty","unit_cost","notes"],
-              ["Supplier ABC","2025-03-15","INV-001","0000123456789","iPhone 15 Case","50","0","850",""],
-              ["Supplier ABC","2025-03-15","INV-001","0000987654321","USB-C Cable 1m","100","50","250","Partial delivery"],
-            ];
+            const rows=[["supplier_name","expected_date","lot_ref","barcode","product_name","ordered_qty","received_qty","unit_cost","notes"],["Supplier ABC","2025-03-15","INV-001","123456","iPhone Case","50","0","850",""],["Supplier ABC","2025-03-15","INV-001","789012","USB Cable","100","50","250","Partial"]];
             downloadCSV(rows,"po_import_template.csv");
             showToast("Template downloaded");
           }}>⬇ Download Template</button>
         </div>
         <div className="card-body">
-          <div className="alert alert-info" style={{marginBottom:10,fontSize:12}}>
-            Upload a CSV following the template. Rows with the same <strong>supplier_name + lot_ref</strong> are grouped into one PO. Products are matched by barcode first, then name.
+          <div className="alert alert-info" style={{marginBottom:8,fontSize:12}}>
+            Upload a CSV using the template format. Rows with the same supplier_name+lot_ref become one PO. Products matched by barcode, then name.
           </div>
-          <input type="file" accept=".csv,.txt" onChange={async(e)=>{
+          <input type="file" accept=".csv" onChange={async(e)=>{
             const file=e.target.files?.[0]; if(!file) return;
             try {
               const text=await file.text();
-              const lines=text.trim().split("\n").map(l=>l.replace(/\r$/,""));
-              if(lines.length<2){showToast("No data rows found","err");e.target.value="";return;}
-              const headers=lines[0].split(",").map(h=>h.replace(/"/g,"").trim().toLowerCase());
-              const rows=lines.slice(1).filter(l=>l.trim()).map(line=>{
-                const vals=[]; let cur="",inQ=false;
-                for(const ch of line){if(ch==="\""){inQ=!inQ;}else if(ch===","&&!inQ){vals.push(cur.trim());cur="";}else{cur+=ch;}}
-                vals.push(cur.trim());
-                const obj={}; headers.forEach((h,i)=>{ obj[h]=(vals[i]||"").replace(/^"|"$/g,"").trim(); }); return obj;
+              const allLines=text.trim().split("\n");
+              const headers=allLines[0].split(",").map(h=>h.replace(/"/g,"").trim().toLowerCase());
+              const dataRows=allLines.slice(1).filter(l=>l.trim()).map(line=>{
+                const vals=line.split(",").map(v=>v.replace(/^\s*"|"\s*$/g,"").trim());
+                const obj={}; headers.forEach((h,idx)=>{ obj[h]=vals[idx]||""; }); return obj;
               });
+              if(!dataRows.length){showToast("No data rows","err");e.target.value="";return;}
               const groups={};
-              rows.forEach(r=>{
-                const key=(r.supplier_name||"Unknown")+"|||"+(r.lot_ref||"");
+              dataRows.forEach(r=>{
+                const key=(r.supplier_name||"Unknown")+":::"+(r.lot_ref||"");
                 if(!groups[key]) groups[key]={supplier_name:r.supplier_name||"Unknown",lot_ref:r.lot_ref||"",expected_date:r.expected_date||"",items:[]};
                 const prod=products.find(p=>p.barcode&&p.barcode===r.barcode)||products.find(p=>p.name?.toLowerCase()===r.product_name?.toLowerCase());
-                groups[key].items.push({product_id:prod?.id||null,product_name:r.product_name||prod?.name||"Unknown",barcode:r.barcode||prod?.barcode||"",ordered_qty:parseInt(r.ordered_qty)||0,received_qty:parseInt(r.received_qty)||0,unit_cost:parseFloat(r.unit_cost)||0,notes:r.notes||""});
+                groups[key].items.push({product_id:prod?.id||null,product_name:r.product_name||prod?.name||"Unknown",barcode:r.barcode||"",ordered_qty:parseInt(r.ordered_qty)||0,received_qty:parseInt(r.received_qty)||0,unit_cost:parseFloat(r.unit_cost)||0,notes:r.notes||""});
               });
-              let created=0;
-              for(const [,g] of Object.entries(groups)){
-                const poId="PO-"+Date.now()+"-"+Math.floor(Math.random()*1000);
-                let supplierId=null;
-                const existingSupp=suppliers.find(s=>s.name?.toLowerCase()===g.supplier_name.toLowerCase());
-                if(existingSupp){supplierId=existingSupp.id;}
-                else{const {data:ns}=await supabase.from("suppliers").insert({name:g.supplier_name}).select().single();if(ns){supplierId=ns.id;setSuppliers(prev=>[...prev,ns]);}}
-                const poRow={id:poId,supplier_id:supplierId,supplier_name:g.supplier_name,expected_date:g.expected_date||null,lot_ref:g.lot_ref||"",shipping_cost:0,notes:"Imported from template",status:"open",created_at:new Date().toISOString()};
-                const {error:poErr}=await supabase.from("purchase_orders").insert(poRow);
-                if(poErr){showToast("PO create failed: "+poErr.message,"err");continue;}
-                const itemRows=g.items.map(i=>({purchase_order_id:poId,product_id:i.product_id,product_name:i.product_name,barcode:i.barcode,ordered_qty:i.ordered_qty,received_qty:i.received_qty,unit_cost:i.unit_cost,notes:i.notes}));
-                await supabase.from("purchase_order_items").insert(itemRows);
-                const allRecv=g.items.every(i=>i.received_qty>=i.ordered_qty&&i.ordered_qty>0);
-                const anyRecv=g.items.some(i=>i.received_qty>0);
-                const status=allRecv?"received":anyRecv?"partial":"open";
+              const keys=Object.keys(groups); let created=0;
+              for(let gi=0;gi<keys.length;gi++){
+                const g=groups[keys[gi]];
+                const poId="PO-"+Date.now()+"-"+gi;
+                let suppId=null;
+                const es=suppliers.find(s=>s.name?.toLowerCase()===g.supplier_name.toLowerCase());
+                if(es){suppId=es.id;}else{const {data:ns}=await supabase.from("suppliers").insert({name:g.supplier_name}).select().single();if(ns){suppId=ns.id;setSuppliers(prev=>[...prev,ns]);}}
+                const poRow={id:poId,supplier_id:suppId,supplier_name:g.supplier_name,expected_date:g.expected_date||null,lot_ref:g.lot_ref||"",shipping_cost:0,notes:"Imported from template",status:"open",created_at:new Date().toISOString()};
+                const {error:pe}=await supabase.from("purchase_orders").insert(poRow);
+                if(pe){showToast("PO failed: "+pe.message,"err");continue;}
+                const iRows=g.items.map(it=>({purchase_order_id:poId,product_id:it.product_id,product_name:it.product_name,barcode:it.barcode,ordered_qty:it.ordered_qty,received_qty:it.received_qty,unit_cost:it.unit_cost,notes:it.notes}));
+                await supabase.from("purchase_order_items").insert(iRows);
+                const status=g.items.every(it=>it.received_qty>=it.ordered_qty&&it.ordered_qty>0)?"received":g.items.some(it=>it.received_qty>0)?"partial":"open";
                 if(status!=="open") await supabase.from("purchase_orders").update({status}).eq("id",poId);
                 setPurchaseOrders(prev=>[{...poRow,status,items:g.items},...prev]);
                 created++;
               }
-              showToast(`${created} PO${created!==1?"s":""} imported`);
-            } catch(err){console.error(err);showToast("Import failed: "+err.message,"err");}
+              showToast(created+" PO"+(created!==1?"s":"")+" imported");
+            } catch(err){showToast("Import error: "+err.message,"err");}
             e.target.value="";
           }}/>
         </div>
@@ -4735,107 +4416,89 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── STAFF ACCOUNTS PAGE ──────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 const ALL_MODULES = [
-  {id:"dashboard",label:"Dashboard",icon:"📊"},
-  {id:"products",label:"Products",icon:"📦"},
-  {id:"purchaseorders",label:"Purchase Orders",icon:"🛒"},
-  {id:"categories",label:"Categories",icon:"🏷️"},
-  {id:"suppliers",label:"Suppliers",icon:"🏭"},
-  {id:"stocktake",label:"Stock Take",icon:"📋"},
-  {id:"transfers",label:"Store Transfers",icon:"🏪"},
-  {id:"orders",label:"Orders",icon:"📋"},
-  {id:"backorders",label:"Back Orders",icon:"⏳"},
-  {id:"invoices",label:"Invoices",icon:"🧾"},
-  {id:"carts",label:"Customer Carts",icon:"🛒"},
-  {id:"clearance",label:"Clearance",icon:"🔥"},
-  {id:"customers",label:"Customers",icon:"👥"},
-  {id:"salesreps",label:"Sales Reps",icon:"🤝"},
-  {id:"analytics",label:"Analytics",icon:"📈"},
-  {id:"activitylog",label:"Activity Log",icon:"🕐"},
+  {id:"dashboard",label:"Dashboard"},{id:"products",label:"Products"},{id:"purchaseorders",label:"Purchase Orders"},
+  {id:"categories",label:"Categories"},{id:"suppliers",label:"Suppliers"},{id:"stocktake",label:"Stock Take"},
+  {id:"transfers",label:"Store Transfers"},{id:"orders",label:"Orders"},{id:"backorders",label:"Back Orders"},
+  {id:"invoices",label:"Invoices"},{id:"carts",label:"Customer Carts"},{id:"clearance",label:"Clearance"},
+  {id:"customers",label:"Customers"},{id:"salesreps",label:"Sales Reps"},{id:"analytics",label:"Analytics"},
+  {id:"activitylog",label:"Activity Log"},
 ];
 const PERM_PRESETS = {
   "Sales":["dashboard","orders","backorders","invoices","customers","carts"],
   "Inventory":["dashboard","products","purchaseorders","categories","suppliers","stocktake","transfers"],
   "Manager":["dashboard","products","purchaseorders","orders","backorders","invoices","customers","analytics"],
-  "Read-Only":["dashboard","analytics","activitylog"],
   "Full Access":ALL_MODULES.map(m=>m.id),
 };
 function StaffPage({ showToast }) {
   const [staffList,setStaffList]=useState([]);
   const [loading,setLoading]=useState(true);
   const [showCreate,setShowCreate]=useState(false);
-  const [editingStaff,setEditingStaff]=useState(null);
   const [form,setForm]=useState({name:"",email:"",password:"",permissions:["dashboard"]});
+  const [editingId,setEditingId]=useState(null);
+  const [editPerms,setEditPerms]=useState([]);
   const [busy,setBusy]=useState(false);
   const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const getPerms=s=>{ try{return JSON.parse(s.permissions||"[]");}catch{return[];} };
+
   useEffect(()=>{
-    (async()=>{
-      setLoading(true);
-      const {data}=await supabase.from("profiles").select("*").eq("role","staff").order("created_at",{ascending:false});
-      setStaffList(data||[]);
-      setLoading(false);
-    })();
+    supabase.from("profiles").select("*").eq("role","staff").order("created_at",{ascending:false})
+      .then(({data})=>{ setStaffList(data||[]); setLoading(false); });
   },[]);
-  const togglePerm=(id)=>setForm(p=>({...p,permissions:p.permissions.includes(id)?p.permissions.filter(x=>x!==id):[...p.permissions,id]}));
-  const toggleEditPerm=(id)=>setEditingStaff(p=>({...p,permissions:p.permissions.includes(id)?p.permissions.filter(x=>x!==id):[...p.permissions,id]}));
-  const getPerms=(s)=>{ try{return JSON.parse(s.permissions||"[]");}catch{return[];} };
+
   const createStaff=async()=>{
-    if(!form.name||!form.email||!form.password){showToast("Name, email and password required","err");return;}
-    if(form.password.length<6){showToast("Password must be at least 6 characters","err");return;}
+    if(!form.name||!form.email||!form.password){showToast("All fields required","err");return;}
+    if(form.password.length<6){showToast("Password must be 6+ chars","err");return;}
     setBusy(true);
-    try {
-      const {data,error}=await supabase.auth.signUp({email:form.email,password:form.password,options:{data:{name:form.name,role:"staff",permissions:JSON.stringify(form.permissions)}}});
-      if(error){showToast("Create failed: "+error.message,"err");setBusy(false);return;}
-      if(data?.user){
-        await supabase.from("profiles").upsert({id:data.user.id,email:form.email,name:form.name,role:"staff",permissions:JSON.stringify(form.permissions),approved:true,created_at:new Date().toISOString()});
-        setStaffList(prev=>[{id:data.user.id,email:form.email,name:form.name,role:"staff",permissions:JSON.stringify(form.permissions),approved:true},...prev]);
-        showToast(`Staff account created for ${form.name}`);
-        setForm({name:"",email:"",password:"",permissions:["dashboard"]});
-        setShowCreate(false);
-      }
-    } catch(e){showToast("Error: "+e.message,"err");}
+    const {data,error}=await supabase.auth.signUp({email:form.email,password:form.password,options:{data:{name:form.name,role:"staff"}}});
+    if(error){showToast(error.message,"err");setBusy(false);return;}
+    if(data?.user){
+      const permsJson=JSON.stringify(form.permissions);
+      await supabase.from("profiles").upsert({id:data.user.id,email:form.email,name:form.name,role:"staff",permissions:permsJson,approved:true,created_at:new Date().toISOString()});
+      setStaffList(prev=>[{id:data.user.id,email:form.email,name:form.name,role:"staff",permissions:permsJson,approved:true},...prev]);
+      showToast("Staff account created for "+form.name);
+      setForm({name:"",email:"",password:"",permissions:["dashboard"]});
+      setShowCreate(false);
+    }
     setBusy(false);
   };
-  const updatePerms=async(s)=>{
-    const permsJson=JSON.stringify(editingStaff.permissions||[]);
-    await supabase.from("profiles").update({permissions:permsJson}).eq("id",s.id);
-    setStaffList(prev=>prev.map(x=>x.id===s.id?{...x,permissions:permsJson}:x));
-    setEditingStaff(null);
+
+  const savePerms=async(id)=>{
+    const permsJson=JSON.stringify(editPerms);
+    await supabase.from("profiles").update({permissions:permsJson}).eq("id",id);
+    setStaffList(prev=>prev.map(s=>s.id===id?{...s,permissions:permsJson}:s));
+    setEditingId(null);
     showToast("Permissions updated");
   };
-  const disableStaff=async(id)=>{if(!confirm("Disable this staff account?"))return;await supabase.from("profiles").update({approved:false}).eq("id",id);setStaffList(prev=>prev.map(s=>s.id===id?{...s,approved:false}:s));showToast("Account disabled");};
-  const enableStaff=async(id)=>{await supabase.from("profiles").update({approved:true}).eq("id",id);setStaffList(prev=>prev.map(s=>s.id===id?{...s,approved:true}:s));showToast("Account enabled");};
+
   return (
     <div style={{maxWidth:900}}>
       <div className="card" style={{marginBottom:16}}>
         <div className="card-header" style={{justifyContent:"space-between"}}>
-          <div>
-            <h3>🔑 Staff Accounts</h3>
-            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Create backend-only accounts with module-level access control.</div>
-          </div>
-          <button className="btn btn-primary btn-sm" onClick={()=>setShowCreate(v=>!v)}>{showCreate?"✕ Cancel":"+ Create Staff Account"}</button>
+          <h3>🔑 Staff Accounts</h3>
+          <button className="btn btn-primary btn-sm" onClick={()=>setShowCreate(v=>!v)}>{showCreate?"✕ Cancel":"+ New Staff Account"}</button>
         </div>
         {showCreate&&(
           <div style={{padding:20,borderBottom:"1px solid var(--border)",background:"var(--bg3)"}}>
-            <div style={{fontWeight:600,marginBottom:12}}>New Staff Account</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
-              <div className="form-group" style={{margin:0}}><label>Full Name *</label><input value={form.name} onChange={e=>sf("name",e.target.value)}/></div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+              <div className="form-group" style={{margin:0}}><label>Name *</label><input value={form.name} onChange={e=>sf("name",e.target.value)}/></div>
               <div className="form-group" style={{margin:0}}><label>Email *</label><input type="email" value={form.email} onChange={e=>sf("email",e.target.value)}/></div>
-              <div className="form-group" style={{margin:0}}><label>Temp Password *</label><input type="password" value={form.password} onChange={e=>sf("password",e.target.value)}/></div>
+              <div className="form-group" style={{margin:0}}><label>Password *</label><input type="password" value={form.password} onChange={e=>sf("password",e.target.value)}/></div>
             </div>
-            <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>Module Permissions</div>
-            <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
-              {Object.keys(PERM_PRESETS).map(p=><button key={p} className="btn btn-ghost btn-xs" onClick={()=>setForm(f=>({...f,permissions:PERM_PRESETS[p]}))}>Use: {p}</button>)}
+            <div style={{fontWeight:600,fontSize:13,marginBottom:6}}>Permissions</div>
+            <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+              {Object.keys(PERM_PRESETS).map(p=><button key={p} className="btn btn-ghost btn-xs" onClick={()=>setForm(f=>({...f,permissions:PERM_PRESETS[p]}))}>{p}</button>)}
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5,marginBottom:16}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:12}}>
               {ALL_MODULES.map(m=>(
-                <label key={m.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",padding:"4px 6px",borderRadius:6,background:form.permissions.includes(m.id)?"var(--accent)22":"transparent",border:"1px solid var(--border)"}}>
-                  <input type="checkbox" checked={form.permissions.includes(m.id)} onChange={()=>togglePerm(m.id)} style={{width:13,height:13}}/>
-                  {m.icon} {m.label}
+                <label key={m.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",padding:"3px 6px",borderRadius:5,border:"1px solid var(--border)",background:form.permissions.includes(m.id)?"var(--accent)22":"transparent"}}>
+                  <input type="checkbox" checked={form.permissions.includes(m.id)} onChange={()=>setForm(f=>({...f,permissions:f.permissions.includes(m.id)?f.permissions.filter(x=>x!==m.id):[...f.permissions,m.id]}))} style={{width:13,height:13}}/>
+                  {m.label}
                 </label>
               ))}
             </div>
@@ -4852,42 +4515,47 @@ function StaffPage({ showToast }) {
               {staffList.length===0&&<tr><td colSpan={5} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No staff accounts yet.</td></tr>}
               {staffList.map(s=>{
                 const perms=getPerms(s);
-                const isEditing=editingStaff?.id===s.id;
+                const isEd=editingId===s.id;
                 return (
                   <tr key={s.id}>
-                    <td style={{fontWeight:600}}>{s.name||"—"}</td>
-                    <td style={{fontSize:12,color:"var(--text2)"}}>{s.email}</td>
-                    <td style={{maxWidth:320}}>
-                      {isEditing?(
+                    <td style={{fontWeight:600}}>{s.name}</td>
+                    <td style={{fontSize:12}}>{s.email}</td>
+                    <td>
+                      {isEd?(
                         <div>
-                          <div style={{display:"flex",gap:5,marginBottom:8,flexWrap:"wrap"}}>
-                            {Object.keys(PERM_PRESETS).map(p=><button key={p} className="btn btn-ghost btn-xs" onClick={()=>setEditingStaff(prev=>({...prev,permissions:PERM_PRESETS[p]}))}>Use: {p}</button>)}
+                          <div style={{display:"flex",gap:4,marginBottom:6,flexWrap:"wrap"}}>
+                            {Object.keys(PERM_PRESETS).map(p=><button key={p} className="btn btn-ghost btn-xs" onClick={()=>setEditPerms(PERM_PRESETS[p])}>{p}</button>)}
                           </div>
-                          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
+                          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginBottom:6}}>
                             {ALL_MODULES.map(m=>(
-                              <label key={m.id} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,cursor:"pointer",padding:"3px 5px",borderRadius:5,background:editingStaff.permissions.includes(m.id)?"var(--accent)22":"transparent",border:"1px solid var(--border)"}}>
-                                <input type="checkbox" checked={editingStaff.permissions.includes(m.id)} onChange={()=>toggleEditPerm(m.id)} style={{width:12,height:12}}/>
-                                {m.icon} {m.label}
+                              <label key={m.id} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,cursor:"pointer",padding:"2px 4px",borderRadius:4,border:"1px solid var(--border)",background:editPerms.includes(m.id)?"var(--accent)22":"transparent"}}>
+                                <input type="checkbox" checked={editPerms.includes(m.id)} onChange={()=>setEditPerms(p=>p.includes(m.id)?p.filter(x=>x!==m.id):[...p,m.id])} style={{width:11,height:11}}/>
+                                {m.label}
                               </label>
                             ))}
                           </div>
                           <div style={{display:"flex",gap:6}}>
-                            <button className="btn btn-primary btn-xs" onClick={()=>updatePerms(s)}>Save</button>
-                            <button className="btn btn-ghost btn-xs" onClick={()=>setEditingStaff(null)}>Cancel</button>
+                            <button className="btn btn-primary btn-xs" onClick={()=>savePerms(s.id)}>Save</button>
+                            <button className="btn btn-ghost btn-xs" onClick={()=>setEditingId(null)}>Cancel</button>
                           </div>
                         </div>
                       ):(
                         <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
-                          {perms.slice(0,5).map(p=>{const m=ALL_MODULES.find(x=>x.id===p);return m?<span key={p} className="badge bb" style={{fontSize:9}}>{m.icon} {m.label}</span>:null;})}
-                          {perms.length>5&&<span className="badge bw" style={{fontSize:9}}>+{perms.length-5} more</span>}
-                          {perms.length===0&&<span style={{fontSize:11,color:"var(--text3)"}}>No modules assigned</span>}
+                          {perms.slice(0,4).map(p=>{const m=ALL_MODULES.find(x=>x.id===p);return m?<span key={p} className="badge bb" style={{fontSize:9}}>{m.label}</span>:null;})}
+                          {perms.length>4&&<span className="badge bw" style={{fontSize:9}}>+{perms.length-4} more</span>}
+                          {perms.length===0&&<span style={{fontSize:11,color:"var(--text3)"}}>None</span>}
                         </div>
                       )}
                     </td>
-                    <td><span className={`badge ${s.approved!==false?"bg":"br"}`} style={{fontSize:10}}>{s.approved!==false?"Active":"Disabled"}</span></td>
+                    <td><span className={"badge "+(s.approved!==false?"bg":"br")} style={{fontSize:10}}>{s.approved!==false?"Active":"Disabled"}</span></td>
                     <td><div className="tbl-actions">
-                      {!isEditing&&<button className="btn btn-secondary btn-xs" onClick={()=>setEditingStaff({...s,permissions:getPerms(s)})}>Edit Perms</button>}
-                      {s.approved!==false?<button className="btn btn-warn btn-xs" onClick={()=>disableStaff(s.id)}>Disable</button>:<button className="btn btn-ghost btn-xs" onClick={()=>enableStaff(s.id)}>Enable</button>}
+                      {!isEd&&<button className="btn btn-secondary btn-xs" onClick={()=>{setEditingId(s.id);setEditPerms(getPerms(s));}}>Edit</button>}
+                      <button className={"btn btn-xs "+(s.approved!==false?"btn-warn":"btn-ghost")} onClick={async()=>{
+                        const newVal=!(s.approved!==false);
+                        await supabase.from("profiles").update({approved:newVal}).eq("id",s.id);
+                        setStaffList(prev=>prev.map(x=>x.id===s.id?{...x,approved:newVal}:x));
+                        showToast(newVal?"Account enabled":"Account disabled");
+                      }}>{s.approved!==false?"Disable":"Enable"}</button>
                     </div></td>
                   </tr>
                 );
@@ -4896,18 +4564,13 @@ function StaffPage({ showToast }) {
           </table></div>
         )}
       </div>
-      <div className="card"><div className="card-body">
-        <div style={{fontSize:13,fontWeight:600,marginBottom:6}}>ℹ️ How Staff Accounts Work</div>
-        <div style={{fontSize:12,color:"var(--text2)",lineHeight:1.7}}>
-          Staff log in at the same URL. They only see modules you grant them. Run this migration once:<br/>
-          <code style={{background:"var(--bg3)",padding:"2px 8px",borderRadius:4,fontSize:11}}>ALTER TABLE profiles ADD COLUMN IF NOT EXISTS permissions jsonb DEFAULT '[]';</code>
-        </div>
+      <div className="card"><div className="card-body" style={{fontSize:12,color:"var(--text2)"}}>
+        <strong>Setup:</strong> Run this SQL once: <code style={{background:"var(--bg3)",padding:"2px 6px",borderRadius:4}}>ALTER TABLE profiles ADD COLUMN IF NOT EXISTS permissions jsonb DEFAULT '[]';</code>
       </div></div>
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // ─── SETTINGS PAGE ────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function SettingsPage({ settings, setSettings, showToast }) {
@@ -5435,7 +5098,6 @@ function CartModal({ cart, updateQty, subtotal, tax, total, taxRate, user, onClo
 // ─────────────────────────────────────────────────────────────────────────────
 function OrderSuccessModal({ order, settings, customers, onClose }) {
   const customer=customers.find(c=>c.id===order.customer_id);
-  const isConsignment=order.type==="consignment"||customer?.customer_type==="consignment";
   return (
     <div className="overlay"><div className="modal modal-sm">
       <div className="modal-body" style={{textAlign:"center",padding:"36px 28px"}}>
@@ -5445,8 +5107,8 @@ function OrderSuccessModal({ order, settings, customers, onClose }) {
         <div style={{background:"var(--bg3)",borderRadius:10,padding:"14px 18px",marginBottom:18,textAlign:"left"}}>
           <div style={{fontSize:11,color:"var(--text3)",marginBottom:3}}>ORDER #</div>
           <div style={{fontFamily:"Syne",fontWeight:700,fontSize:18}}>{order.id}</div>
-          {!isConsignment&&<div style={{marginTop:6,fontSize:13,color:"var(--text2)"}}>Total: <strong style={{color:"var(--accent)"}}>{fmt(order.total)}</strong></div>}
-          {!isConsignment&&<div style={{fontSize:12,color:"var(--text2)"}}>GCT ({order.tax_rate}%): {fmt(order.tax_amount)}</div>}
+          {order.type!=="consignment"&&<div style={{marginTop:6,fontSize:13,color:"var(--text2)"}}>Total: <strong style={{color:"var(--accent)"}}>{fmt(order.total)}</strong></div>}
+          {order.type!=="consignment"&&<div style={{fontSize:12,color:"var(--text2)"}}>GCT ({order.tax_rate}%): {fmt(order.tax_amount)}</div>}
           {order.type==="consignment"&&order.consignment_due&&<div style={{marginTop:4,fontSize:12,color:"var(--warn)"}}>Consignment due: {order.consignment_due}</div>}
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
@@ -5479,7 +5141,7 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
         <h2>Invoice {order.id}</h2>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ Excel/CSV</button>}
-          <button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings,isConsignment)}>🖨 PDF/Print</button>
+          {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings)}>🖨 PDF/Print</button>}
           <button className="xbtn" onClick={onClose}>✕</button>
         </div>
       </div>
@@ -5501,36 +5163,21 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
 
         <div className="tbl-wrap" style={{marginBottom:16}}>
           <table>
-            <thead><tr>
-              <th>Barcode</th><th>Product</th>
-              <th style={{textAlign:"center"}}>Ordered</th>
-              <th style={{textAlign:"center"}}>Shipped</th>
-              <th style={{textAlign:"center"}}>Backordered</th>
-              {!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}
-              {!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}
-            </tr></thead>
-            <tbody>{(order.items||[]).map((item,i)=>{
-              const shipped=item.qty_shipped??item.qty;
-              const backordered=item.qty-shipped;
-              return (
-                <tr key={i}>
-                  <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
-                  <td style={{fontWeight:500}}>{item.name}</td>
-                  <td style={{textAlign:"center"}}>{item.qty}</td>
-                  <td style={{textAlign:"center",color:"var(--success)",fontWeight:600}}>{shipped}</td>
-                  <td style={{textAlign:"center"}}>{backordered>0?<span style={{color:"var(--warn)",fontWeight:600}}>{backordered}</span>:<span style={{color:"var(--text3)"}}>—</span>}</td>
-                  {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
-                  {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(shipped*item.unit_price)}</td>}
-                </tr>
-              );
-            })}
-            {(order.items||[]).length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)"}}>
-              <td colSpan={2} style={{fontWeight:700,fontSize:12}}>TOTALS</td>
-              <td style={{textAlign:"center",fontWeight:700,color:"var(--accent)"}}>{(order.items||[]).reduce((s,i)=>s+i.qty,0)}</td>
-              <td style={{textAlign:"center",fontWeight:700,color:"var(--accent)"}}>{(order.items||[]).reduce((s,i)=>s+(i.qty_shipped??i.qty),0)}</td>
-              <td style={{textAlign:"center",fontWeight:700,color:"var(--warn)"}}>{(order.items||[]).reduce((s,i)=>s+(i.qty-(i.qty_shipped??i.qty)),0)||"—"}</td>
+            <thead><tr><th>Barcode</th><th>Product</th><th>Qty</th>{!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}</tr></thead>
+            <tbody>{(order.items||[]).map((item,i)=>(
+              <tr key={i}>
+                <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
+                <td style={{fontWeight:500}}>{item.name}</td>
+                <td>{item.qty}</td>
+                {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
+                {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(item.qty*item.unit_price)}</td>}
+              </tr>
+            ))}
+            {(order.items||[]).length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
+              <td colSpan={2}>TOTALS</td>
+              <td style={{color:"var(--accent)"}}>{(order.items||[]).reduce((s,i)=>s+i.qty,0)}</td>
               {!isConsignment&&<td></td>}
-              {!isConsignment&&<td style={{textAlign:"right",fontWeight:700,color:"var(--accent)"}}>{fmt((order.items||[]).reduce((s,i)=>s+(i.qty_shipped??i.qty)*i.unit_price,0))}</td>}
+              {!isConsignment&&<td style={{textAlign:"right",color:"var(--accent)"}}>{fmt((order.items||[]).reduce((s,i)=>s+i.qty*i.unit_price,0))}</td>}
             </tr>}
             </tbody>
           </table>
