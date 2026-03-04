@@ -5714,25 +5714,64 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
 // ─── EMAIL MODAL ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function EmailModal({ order, customers, settings, onClose, showToast }) {
-  const customer=customers.find(c=>c.id===order.customer_id);
-  const [to,setTo]=useState(customer?.email||"");
-  const [subject,setSubject]=useState(`Invoice ${order.id} from ${settings.company_name}`);
-  const [body,setBody]=useState(`Dear ${customer?.company||order.customer_name},\n\nPlease find attached your invoice ${order.id} for ${order.total?.toLocaleString?`J$${order.total.toLocaleString()}`:""}.\n\nThank you for your business.\n\n${settings.company_name}\n${settings.company_phone}`);
+  const customer = customers.find(c=>c.id===order.customer_id);
+  const isConsignment = order.type==="consignment" || customer?.customer_type==="consignment";
+  const [to, setTo] = useState(customer?.email||"");
+  const [subject, setSubject] = useState(`Invoice ${order.id} — ${settings.company_name||"Pinglinks Cellular"}`);
+  const [body, setBody] = useState(
+    `Dear ${customer?.company||order.customer_name},
 
-  const send=()=>{ showToast(`Email queued to ${to} (connect email service to send live)`); onClose(); };
+Please find your invoice ${order.id} below.${!isConsignment&&order.total?`
+
+Total: J$${order.total.toLocaleString()}`:""}
+
+Thank you for your business.
+
+${settings.company_name||"Pinglinks Cellular"}
+${settings.company_phone||""}`
+  );
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    if (!to) { showToast("Please enter a recipient email", "err"); return; }
+    setSending(true);
+    try {
+      const invoiceHtml = buildInvoiceHTML(order, customer, settings, isConsignment);
+      const bodyMatch = invoiceHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      const invoiceBody = bodyMatch ? bodyMatch[1] : invoiceHtml;
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/send-invoice-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ to, subject, bodyText: body, invoiceHtml: invoiceBody, orderId: order.id, customerName: customer?.company||order.customer_name }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        showToast("Failed to send: " + (data.error||"Unknown error"), "err");
+      } else {
+        showToast(`Invoice emailed to ${to} ✓`);
+        onClose();
+      }
+    } catch(e) {
+      showToast("Send failed: " + e.message, "err");
+    }
+    setSending(false);
+  };
 
   return (
     <div className="overlay"><div className="modal modal-md">
       <div className="modal-head"><h2>📧 Email Invoice</h2><button className="xbtn" onClick={onClose}>✕</button></div>
       <div className="modal-body">
-        <div className="alert alert-info">To send live emails, connect a service like SendGrid or Resend to this portal.</div>
-        <div className="form-group"><label>To</label><input value={to} onChange={e=>setTo(e.target.value)}/></div>
+        {!customer?.email&&<div className="alert alert-warn" style={{marginBottom:12}}>⚠️ No email on file for this customer — enter one below.</div>}
+        <div className="form-group"><label>To</label><input value={to} onChange={e=>setTo(e.target.value)} placeholder="customer@email.com"/></div>
         <div className="form-group"><label>Subject</label><input value={subject} onChange={e=>setSubject(e.target.value)}/></div>
         <div className="form-group"><label>Message</label><textarea value={body} onChange={e=>setBody(e.target.value)} rows={7}/></div>
+        <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>The full invoice will be embedded below your message.</div>
       </div>
       <div className="modal-foot">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={send}>Send Email</button>
+        <button className="btn btn-primary" onClick={send} disabled={sending||!to}>
+          {sending?"Sending…":"📧 Send Invoice"}
+        </button>
       </div>
     </div></div>
   );
