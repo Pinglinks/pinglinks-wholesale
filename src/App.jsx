@@ -6,6 +6,7 @@ const SUPABASE_URL = "https://hzykmhxsilbfkgzjkqoy.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6eWttaHhzaWxiZmtnemprcW95Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxNjI4NDQsImV4cCI6MjA4NzczODg0NH0.jQ_Pey7cYwe6ZyqiMLMvnCj_FPdEuN9OXRAEqeFbYQQ";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let currentUserName = "Admin"; // updated on login, used for activity log attribution
 
 // ─── LOGO ─────────────────────────────────────────────────────────────────────
 const LOGO_SRC = new URL("./logo.png", import.meta.url).href;
@@ -636,6 +637,8 @@ export default function App() {
   if (!user) return <><style dangerouslySetInnerHTML={{__html:STYLES}}/><LoginPage onLogin={login}/></>;
 
   const isAdmin = user.role === "admin";
+  // Make current user name available to activity log writes throughout the app
+  currentUserName = user.name || user.company || user.email || "Admin";
 
   // ── Cart helpers ──
   const cartCount = cart.reduce((s,i)=>s+i.qty,0);
@@ -1157,14 +1160,14 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     if(blocked.length>0){showToast(`Cannot archive ${blocked.length} product(s) with stock or incoming orders`,"err");return;}
     for(const p of toArchive){
       await supabase.from("products").update({active:false}).eq("id",p.id);
-      try{await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+      try{await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){}
     }
     setProducts(p=>p.map(x=>selected.includes(x.id)?{...x,active:false}:x));
     showToast(`${toArchive.length} products archived`); clearSelect();
   };
   const restore = async (id) => {
     await supabase.from("products").update({active:true}).eq("id",id);
-    try{const p=products.find(x=>x.id===id);await supabase.from("activity_log").insert({action:"product_updated",details:`Unarchived: ${p?.name}`,entity_type:"product",entity_id:id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+    try{const p=products.find(x=>x.id===id);await supabase.from("activity_log").insert({action:"product_updated",details:`Unarchived: ${p?.name}`,entity_type:"product",entity_id:id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){}
     setProducts(p=>p.map(x=>x.id===id?{...x,active:true}:x)); showToast("Product unarchived");
   };
 
@@ -1251,7 +1254,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
       const {data, error} = await supabase.from("products").insert(prod).select().single();
       if (data) {
         imported.push(data);
-        try { await supabase.from("activity_log").insert({action:"product_added",details:`Imported: ${prod.name}`,entity_type:"product",entity_id:String(data.id||""),user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}
+        try { await supabase.from("activity_log").insert({action:"product_added",details:`Imported: ${prod.name}`,entity_type:"product",entity_id:String(data.id||""),user_name:currentUserName,timestamp:new Date().toISOString()}); } catch(e) {}
       }
       else if (error) { lastError = error.message; console.error("Import error:", prod.name, error.message); }
     }
@@ -1377,7 +1380,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                               if(p.stock>0){showToast("Cannot archive — product has stock on hand","err");return;}
                               if(incomingQty>0){showToast("Cannot archive — product has incoming stock on open POs","err");return;}
                               await supabase.from("products").update({active:false}).eq("id",p.id);
-                              try{await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+                              try{await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){}
                               setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");
                             }} style={{opacity:p.stock>0||incomingQty>0?0.45:1}}>Archive</button>}
                       </div>
@@ -1417,7 +1420,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     }
     const {error} = await supabase.from("products").update(payload).eq("id",editing.id);
     if(error){ showToast("Save failed: "+error.message,"err"); return; }
-    try { await supabase.from("activity_log").insert({action:"product_updated",details:`Updated: ${data.name}`,entity_type:"product",entity_id:editing.id,user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}
+    try { await supabase.from("activity_log").insert({action:"product_updated",details:`Updated: ${data.name}`,entity_type:"product",entity_id:editing.id,user_name:currentUserName,timestamp:new Date().toISOString()}); } catch(e) {}
     setProducts(p=>p.map(x=>x.id===editing.id?{...x,...payload}:x));
     showToast("Product updated");
   } else {
@@ -1441,7 +1444,7 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
     const {data:saved,error} = await supabase.from("products").insert(prod).select().single();
     if(error){ showToast("Save failed: "+error.message,"err"); return; }
     if(saved){
-      try { await supabase.from("activity_log").insert({action:"product_added",details:`Added: ${data.name}`,entity_type:"product",entity_id:saved.id,user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}
+      try { await supabase.from("activity_log").insert({action:"product_added",details:`Added: ${data.name}`,entity_type:"product",entity_id:saved.id,user_name:currentUserName,timestamp:new Date().toISOString()}); } catch(e) {}
       setProducts(p=>[saved,...p]);
       showToast("Product added");
     }
@@ -1475,7 +1478,8 @@ function ProductHistoryModal({ product, orders, transfers, onClose }) {
     (o.items||[]).filter(i=>i.product_id===product.id).map(i=>({
       type:"order", date:o.created_at||o.date, icon:"🛒",
       label:"Order placed", color:"var(--accent)",
-      detail:`${i.qty} units @ ${fmt(i.unit_price)} — Order ${o.id} (${o.customer_name||""})`
+      detail:`${i.qty} units @ ${fmt(i.unit_price)} — Order ${o.id} (${o.customer_name||""})`,
+      user: o.customer_name||""
     }))
   );
 
@@ -1483,7 +1487,8 @@ function ProductHistoryModal({ product, orders, transfers, onClose }) {
     (t.items||[]).filter(i=>i.product_id===product.id).map(i=>({
       type:"transfer", date:t.created_at||t.date, icon:"🏬",
       label:"Transferred to store", color:"var(--accent3)",
-      detail:`${i.qty} units → ${t.store_name} — Transfer ${t.id}`
+      detail:`${i.qty} units → ${t.store_name} — Transfer ${t.id}`,
+      user: t.created_by||""
     }))
   );
 
@@ -1503,7 +1508,8 @@ function ProductHistoryModal({ product, orders, transfers, onClose }) {
     icon: iconMap[l.action]||"📋",
     label: l.action?.replace(/_/g," "),
     color: colorMap[l.action]||"var(--text2)",
-    detail: l.details
+    detail: l.details,
+    user: l.user_name||""
   }));
 
   const allEvents = [...orderEvents, ...transferEvents, ...logEvents]
@@ -1546,6 +1552,7 @@ function ProductHistoryModal({ product, orders, transfers, onClose }) {
                   <span style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap"}}>{new Date(e.date).toLocaleString()}</span>
                 </div>
                 <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>{e.detail}</div>
+                {e.user&&<div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>👤 {e.user}</div>}
               </div>
             </div>
           ))}
@@ -1940,7 +1947,7 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
         action:"stock_take",
         details:`Stock take: counted ${c} (was ${prod?.stock||0}, variance ${variance>0?"+":""}${variance}) — ${stId}`,
         entity_type:"product", entity_id:String(id),
-        user_name:"Admin", timestamp:new Date().toISOString()
+        user_name:currentUserName, timestamp:new Date().toISOString()
       }); } catch(e) {}
     }
     setProducts(p=>p.map(x=>{const c=counts[x.id];return c!==undefined&&c!==""?{...x,stock:+c}:x;}));
@@ -2469,7 +2476,7 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
       action:"refund_processed",
       details:`${isConsignment?"Consignment return":"Refund"} of ${refundItems.length} item(s) on order ${order.id}.${isConsignment?"":" Order total adjusted."}`,
       entity_type:"order", entity_id:String(order.id),
-      user_name:"Admin", timestamp:new Date().toISOString()
+      user_name:currentUserName, timestamp:new Date().toISOString()
     }); } catch(e) {}
 
     setProcessing(false);
@@ -2846,7 +2853,7 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
       await supabase.from("orders").update({status:"invoiced"}).eq("id",b.order_id);
       setOrders(prev=>prev.map(o=>o.id===b.order_id?{...o,status:"invoiced"}:o));
     }
-    try{await supabase.from("activity_log").insert({action:"order_status",details:`Backorder cancelled for ${b.product_name} on order ${b.order_id}`,entity_type:"order",entity_id:b.order_id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+    try{await supabase.from("activity_log").insert({action:"order_status",details:`Backorder cancelled for ${b.product_name} on order ${b.order_id}`,entity_type:"order",entity_id:b.order_id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){}
     showToast("Backorder cancelled");
   };
 
@@ -3279,7 +3286,7 @@ function CustomersPage({ customers, setCustomers, orders, salesReps, showToast }
   });
 
   const logAct = async(action,details,entity_type="",entity_id="") => {
-    try { await supabase.from("activity_log").insert({action,details,entity_type,entity_id:String(entity_id||""),user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) { console.warn("Log err:",e); }
+    try { await supabase.from("activity_log").insert({action,details,entity_type,entity_id:String(entity_id||""),user_name:currentUserName,timestamp:new Date().toISOString()}); } catch(e) { console.warn("Log err:",e); }
   };
 
   const approve=async(id,type)=>{
@@ -3811,7 +3818,7 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
         action:"stock_received",
         details:`Received ${receiveQty} units @ ${fmt(newCost)} (avg cost now ${fmt(avgCost)}) via PO ${po.id}`,
         entity_type:"product", entity_id:String(prod.id),
-        user_name:"Admin", timestamp:new Date().toISOString()
+        user_name:currentUserName, timestamp:new Date().toISOString()
       }); } catch(e) {}
     }
 
@@ -4174,6 +4181,21 @@ function IncomingStockPage({ purchaseOrders, products }) {
 function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders }) {
   const [filter, setFilter] = useState("active");
   const [selected, setSelected] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Refresh carts from DB every time this page is opened, and every 60s while open
+  const refreshCarts = async () => {
+    setRefreshing(true);
+    const { data } = await supabase.from("customer_carts").select("*").order("updated_at",{ascending:false});
+    if (data) setCustomerCarts(data);
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    refreshCarts();
+    const interval = setInterval(refreshCarts, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Enrich carts with customer data and parse items
   const enriched = customerCarts.map(c => {
@@ -4188,7 +4210,7 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders 
   });
 
   const filtered = enriched.filter(c => {
-    if (filter === "active") return c.status === "active" && c.items.length > 0;
+    if (filter === "active") return c.status === "active" && c.items.length > 0 && !c.isAbandoned;
     if (filter === "abandoned") return c.isAbandoned;
     if (filter === "converted") return c.status === "converted";
     return true;
@@ -4232,9 +4254,9 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders 
         {[["active","🟢 Active Carts"],["abandoned","⚠️ Abandoned"],["converted","✓ Converted"],["all","All"]].map(([v,l])=>(
           <button key={v} className={`btn btn-sm ${filter===v?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(v)}>{l}</button>
         ))}
-        <div style={{marginLeft:"auto",fontSize:12,color:"var(--text3)",alignSelf:"center"}}>
-          Updates in real-time as customers add items
-        </div>
+        <button className="btn btn-secondary btn-sm" onClick={refreshCarts} disabled={refreshing} style={{marginLeft:"auto"}}>
+          {refreshing?"⟳ Refreshing…":"⟳ Refresh"}
+        </button>
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:selected?"1fr 380px":"1fr",gap:16}}>
