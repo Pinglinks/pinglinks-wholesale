@@ -5736,13 +5736,33 @@ ${settings.company_phone||""}`
     if (!to) { showToast("Please enter a recipient email", "err"); return; }
     setSending(true);
     try {
-      const invoiceHtml = buildInvoiceHTML(order, customer, settings, isConsignment);
-      const bodyMatch = invoiceHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-      const invoiceBody = bodyMatch ? bodyMatch[1] : invoiceHtml;
       const res = await fetch(`${SUPABASE_URL}/functions/v1/send-invoice-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
-        body: JSON.stringify({ to, subject, bodyText: body, invoiceHtml: invoiceBody, orderId: order.id, customerName: customer?.company||order.customer_name }),
+        body: JSON.stringify({
+          to, subject, bodyText: body,
+          orderId: order.id,
+          customerName: customer?.company||order.customer_name,
+          customerTRN: customer?.tax_id||"",
+          orderDate: order.date,
+          paymentMethod: order.payment_method||"",
+          orderStatus: order.status,
+          orderType: order.type||"standard",
+          items: order.items||[],
+          subtotal: order.subtotal||0,
+          taxRate: order.tax_rate||0,
+          taxAmount: order.tax_amount||0,
+          total: order.total||0,
+          notes: order.notes||"",
+          isConsignment,
+          bankName: settings.bank_name||"",
+          bankAccountName: settings.bank_account_name||"",
+          bankAccountNumber: settings.bank_account_number||"",
+          bankBranch: settings.bank_routing||"",
+          bankNotes: settings.bank_notes||"",
+          paymentLink: settings.payment_link||"",
+          paymentLinkLabel: settings.payment_link_label||"Pay Now",
+        }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
