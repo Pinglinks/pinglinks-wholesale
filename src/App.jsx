@@ -2065,130 +2065,283 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
 // ─── TRANSFERS PAGE ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function TransfersPage({ products, setProducts, transfers, setTransfers, stores, settings, showToast }) {
-  const [tab,setTab]=useState("new");
-  const [selectedStore,setSelectedStore]=useState(stores[0]?.id||"");
-  const [items,setItems]=useState([]);
-  const [search,setSearch]=useState("");
-  const [notes,setNotes]=useState("");
+  // draft = null means no open draft. draft = { id, store_id, store_name, po_number, notes, items[] } = open transfer
+  const [draft, setDraft] = useState(null);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newStore, setNewStore] = useState(stores[0]?.id||"");
+  const [newPO, setNewPO] = useState("");
+  const [newNotes, setNewNotes] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [search, setSearch] = useState("");
+  const [tab, setTab] = useState("active");
 
-  const activeProducts=products.filter(p=>p.active&&p.stock>0);
-  const filtered=activeProducts.filter(p=>!search||p.name?.toLowerCase().includes(search.toLowerCase())||p.sku?.toLowerCase().includes(search.toLowerCase())||p.barcode?.includes(search));
+  const activeProducts = products.filter(p=>p.active&&p.stock>0);
+  const filteredProds = activeProducts.filter(p=>!search||
+    p.name?.toLowerCase().includes(search.toLowerCase())||
+    p.sku?.toLowerCase().includes(search.toLowerCase())||
+    p.barcode?.includes(search));
 
-  const addItem=(product)=>{
-    if(items.find(i=>i.pid===product.id))return;
-    setItems(p=>[...p,{pid:product.id,sku:product.sku,barcode:product.barcode||"",name:product.name,cost:product.cost,qty:1,maxQty:product.stock}]);
+  // ── Start a new draft transfer ──
+  const startDraft = async () => {
+    if(!newStore){showToast("Select a store","err");return;}
+    setCreating(true);
+    const store = stores.find(s=>s.id===newStore);
+    const id = genId(settings.transfer_prefix||"TRF", transfers);
+    // Save as draft (status="draft") — stock NOT yet deducted
+    const {data:tr, error} = await supabase.from("transfers").insert({
+      id, store_id:newStore, store_name:store?.name||"",
+      date:today(), total_cost:0, notes:newNotes,
+      po_number:newPO, status:"draft", created_at:new Date().toISOString()
+    }).select().single();
+    if(error){showToast("Failed to create draft: "+error.message,"err");setCreating(false);return;}
+    const newDraft = {...tr, items:[]};
+    setTransfers(p=>[newDraft,...p]);
+    setDraft(newDraft);
+    setShowNewForm(false);
+    setNewPO(""); setNewNotes("");
+    setCreating(false);
+    setTab("active");
+    showToast(`Transfer ${id} opened — add items then complete`);
   };
-  const updateItem=(pid,qty)=>{ if(+qty<=0)setItems(p=>p.filter(i=>i.pid!==pid));else setItems(p=>p.map(i=>i.pid===pid?{...i,qty:Math.min(+qty,i.maxQty)}:i)); };
 
-  const createTransfer=async()=>{
-    if(!items.length){showToast("Add items first","err");return;}
-    const store=stores.find(s=>s.id===selectedStore);
-    const id=genId(settings.transfer_prefix||"TRF",transfers);
-    const trItems=items.map(i=>({product_id:i.pid,name:i.name,barcode:i.barcode,qty:i.qty,cost:i.cost}));
-    const total=items.reduce((s,i)=>s+i.cost*i.qty,0);
-    // Save transfer to Supabase
-    const {data:tr} = await supabase.from("transfers").insert({id,store_id:selectedStore,store_name:store?.name||"",date:today(),total_cost:total,notes}).select().single();
-    if(tr){
-      await supabase.from("transfer_items").insert(trItems.map(i=>({...i,transfer_id:id})));
-      setTransfers(p=>[{...tr,items:trItems},...p]);
-    }
-    // Update stock in Supabase
-    for(const i of items){
+  // ── Add item to draft ──
+  const addItem = (product) => {
+    if(!draft) return;
+    if(draft.items.find(i=>i.pid===product.id)) return;
+    const newItem = {pid:product.id,sku:product.sku,barcode:product.barcode||"",name:product.name,cost:product.cost,qty:1,maxQty:product.stock};
+    const updated = {...draft, items:[...draft.items, newItem]};
+    setDraft(updated);
+    setTransfers(p=>p.map(t=>t.id===draft.id?updated:t));
+  };
+
+  const updateItem = (pid, qty) => {
+    if(!draft) return;
+    let updated;
+    if(+qty<=0) updated = {...draft, items:draft.items.filter(i=>i.pid!==pid)};
+    else updated = {...draft, items:draft.items.map(i=>i.pid===pid?{...i,qty:Math.min(+qty,i.maxQty)}:i)};
+    setDraft(updated);
+    setTransfers(p=>p.map(t=>t.id===draft.id?updated:t));
+  };
+
+  const removeItem = (pid) => updateItem(pid, 0);
+
+  // ── Update draft header fields ──
+  const updateDraftField = async (field, value) => {
+    const updated = {...draft, [field]:value};
+    setDraft(updated);
+    setTransfers(p=>p.map(t=>t.id===draft.id?updated:t));
+    await supabase.from("transfers").update({[field]:value}).eq("id",draft.id);
+  };
+
+  // ── Complete transfer — deduct stock, save items, mark complete ──
+  const completeTransfer = async () => {
+    if(!draft||!draft.items.length){showToast("Add items before completing","err");return;}
+    setCompleting(true);
+    const trItems = draft.items.map(i=>({product_id:i.pid,name:i.name,sku:i.sku||"",barcode:i.barcode,qty:i.qty,cost:i.cost}));
+    const total = draft.items.reduce((s,i)=>s+i.cost*i.qty,0);
+
+    // Save items
+    await supabase.from("transfer_items").delete().eq("transfer_id",draft.id);
+    await supabase.from("transfer_items").insert(trItems.map(i=>({...i,transfer_id:draft.id})));
+
+    // Deduct stock
+    for(const i of draft.items){
       const prod=products.find(x=>x.id===i.pid);
       const newStock=Math.max(0,(prod?.stock||0)-i.qty);
       await supabase.from("products").update({stock:newStock}).eq("id",i.pid);
     }
-    setProducts(p=>p.map(x=>{const ci=items.find(i=>i.pid===x.id);return ci?{...x,stock:Math.max(0,x.stock-ci.qty)}:x;}));
-    setItems([]); setNotes("");
-    showToast(`Transfer ${id} created`);
+    setProducts(p=>p.map(x=>{const ci=draft.items.find(i=>i.pid===x.id);return ci?{...x,stock:Math.max(0,x.stock-ci.qty)}:x;}));
+
+    // Mark transfer complete
+    await supabase.from("transfers").update({status:"complete",total_cost:total}).eq("id",draft.id);
+    const completed = {...draft, status:"complete", total_cost:total, items:trItems};
+    setTransfers(p=>p.map(t=>t.id===draft.id?completed:t));
+    setDraft(null);
+    setCompleting(false);
     setTab("history");
+    showToast(`Transfer ${draft.id} completed — stock deducted ✓`);
   };
 
-  const downloadTransfer=(tr)=>{
+  // ── Discard draft ──
+  const discardDraft = async () => {
+    if(!draft)return;
+    if(!window.confirm("Discard this draft transfer? No stock will be affected."))return;
+    await supabase.from("transfer_items").delete().eq("transfer_id",draft.id);
+    await supabase.from("transfers").delete().eq("id",draft.id);
+    setTransfers(p=>p.filter(t=>t.id!==draft.id));
+    setDraft(null);
+    showToast("Draft discarded");
+  };
+
+  const downloadTransfer = (tr) => {
     const rows=[
-      ["Transfer ID",tr.id],["Store",tr.store_name],["Date",tr.date],["Total Cost",tr.total_cost],[""],
+      ["Transfer ID",tr.id],["Store",tr.store_name],["PO #",tr.po_number||"—"],["Date",tr.date],["Total Cost",tr.total_cost],["Notes",tr.notes||""],[""],
       ["SKU","Barcode","Product","Qty","Unit Cost","Total Cost"],
-      ...tr.items.map(i=>[i.sku,i.barcode||"",i.name,i.qty,i.cost,i.qty*i.cost])
+      ...(tr.items||[]).map(i=>[i.sku,i.barcode||"",i.name,i.qty,i.cost,i.qty*i.cost])
     ];
     downloadCSV(rows,`${tr.id}.csv`);
     showToast("Transfer sheet downloaded");
   };
 
+  const completedTransfers = transfers.filter(t=>t.status!=="draft");
+
   return (
     <>
-      <div className="tabs">
-        <button className={`tab ${tab==="new"?"active":""}`} onClick={()=>setTab("new")}>New Transfer</button>
-        <button className={`tab ${tab==="history"?"active":""}`} onClick={()=>setTab("history")}>Transfer History</button>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div className="tabs" style={{margin:0}}>
+          <button className={`tab ${tab==="active"?"active":""}`} onClick={()=>setTab("active")}>
+            Active Draft {draft?<span className="badge bb" style={{fontSize:9,marginLeft:4}}>1 open</span>:null}
+          </button>
+          <button className={`tab ${tab==="history"?"active":""}`} onClick={()=>setTab("history")}>Transfer History ({completedTransfers.length})</button>
+        </div>
+        {!draft&&!showNewForm&&(
+          <button className="btn btn-primary btn-sm" onClick={()=>setShowNewForm(true)}>+ New Transfer</button>
+        )}
       </div>
 
-      {tab==="new"&&(
-        <div className="two-col" style={{gap:18,alignItems:"start"}}>
-          <div>
-            <div className="card mb-3">
-              <div className="card-header"><h3>Transfer Details</h3></div>
-              <div className="card-body">
-                <div className="form-group"><label>Destination Store *</label>
-                  <select value={selectedStore} onChange={e=>setSelectedStore(e.target.value)}>
-                    {stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                <div className="form-group"><label>Notes</label><textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2}/></div>
+      {/* New transfer form */}
+      {showNewForm&&!draft&&(
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>🏪 Start New Transfer</h3></div>
+          <div className="card-body">
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+              <div className="form-group" style={{margin:0}}>
+                <label>Destination Store *</label>
+                <select value={newStore} onChange={e=>setNewStore(e.target.value)}>
+                  {stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div className="form-group" style={{margin:0}}>
+                <label>Purchase Order #</label>
+                <input value={newPO} onChange={e=>setNewPO(e.target.value)} placeholder="e.g. PO-2026-001"/>
+              </div>
+              <div className="form-group" style={{margin:0}}>
+                <label>Notes</label>
+                <input value={newNotes} onChange={e=>setNewNotes(e.target.value)} placeholder="Optional notes…"/>
               </div>
             </div>
-            <div className="card">
-              <div className="card-header"><h3>Selected Items ({items.length})</h3></div>
-              {items.length===0?<div style={{padding:20,textAlign:"center",color:"var(--text3)"}}>Search and add products →</div>:
-                <div className="tbl-wrap"><table><thead><tr><th>SKU</th><th>Product</th><th>Cost</th><th>Qty</th><th>Total</th><th></th></tr></thead>
-                  <tbody>{items.map(i=>(
-                    <tr key={i.pid}>
-                      <td><code style={{fontSize:10}}>{i.sku}</code></td>
-                      <td style={{fontSize:12}}>{i.name.slice(0,25)}{i.name.length>25?"…":""}</td>
-                      <td style={{fontSize:12}}>{fmt(i.cost)}</td>
-                      <td><input type="number" min={1} max={i.maxQty} value={i.qty} onChange={e=>updateItem(i.pid,e.target.value)} style={{width:60,textAlign:"center"}}/></td>
-                      <td style={{fontWeight:600}}>{fmt(i.cost*i.qty)}</td>
-                      <td><button className="btn btn-danger btn-xs" onClick={()=>setItems(p=>p.filter(x=>x.pid!==i.pid))}>✕</button></td>
-                    </tr>
-                  ))}</tbody>
-                </table></div>
-              }
-              {items.length>0&&(
-                <div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontFamily:"Syne",fontWeight:700,color:"var(--accent)"}}>Total Cost: {fmt(items.reduce((s,i)=>s+i.cost*i.qty,0))}</span>
-                  <button className="btn btn-primary" onClick={createTransfer}>Create Transfer Order</button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="card-header"><h3>Add Products</h3></div>
-            <div style={{padding:"12px 16px"}}>
-              <div className="search-wrap"><span className="search-icon">🔍</span><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search inventory…"/></div>
-            </div>
-            <div className="tbl-wrap" style={{maxHeight:480,overflowY:"auto"}}>
-              <table><thead><tr><th>Barcode</th><th>Name</th><th>Stock</th><th></th></tr></thead>
-                <tbody>{filtered.slice(0,50).map(p=>(
-                  <tr key={p.id}>
-                    <td><code style={{fontSize:11}}>{p.barcode||"—"}</code></td>
-                    <td style={{fontSize:12}}>{p.name}</td>
-                    <td style={{fontWeight:700}}>{p.stock}</td>
-                    <td><button className="btn btn-primary btn-xs" disabled={!!items.find(i=>i.pid===p.id)} onClick={()=>addItem(p)}>{items.find(i=>i.pid===p.id)?"✓":"Add"}</button></td>
-                  </tr>
-                ))}</tbody>
-              </table>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button className="btn btn-secondary" onClick={()=>setShowNewForm(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={startDraft} disabled={creating}>
+                {creating?"Creating…":"Create Transfer →"}
+              </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Active draft */}
+      {tab==="active"&&(
+        <>
+          {!draft&&!showNewForm&&(
+            <div className="empty"><div className="ei">🏪</div><p>No open transfer. Click <strong>+ New Transfer</strong> to start.</p></div>
+          )}
+          {draft&&(
+            <div className="two-col" style={{gap:18,alignItems:"start"}}>
+              <div>
+                {/* Draft header */}
+                <div className="card mb-3">
+                  <div className="card-header" style={{justifyContent:"space-between"}}>
+                    <div>
+                      <div style={{fontFamily:"Syne",fontWeight:700}}>{draft.id}</div>
+                      <span className="badge bo" style={{fontSize:10,marginTop:3}}>Draft — not yet complete</span>
+                    </div>
+                    <button className="btn btn-ghost btn-xs" style={{color:"var(--danger)"}} onClick={discardDraft}>🗑 Discard</button>
+                  </div>
+                  <div className="card-body">
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                      <div className="form-group" style={{margin:0}}>
+                        <label>Destination Store</label>
+                        <select value={draft.store_id} onChange={e=>{const s=stores.find(x=>x.id===e.target.value);updateDraftField("store_id",e.target.value);updateDraftField("store_name",s?.name||"");}}>
+                          {stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                      </div>
+                      <div className="form-group" style={{margin:0}}>
+                        <label>Purchase Order #</label>
+                        <input value={draft.po_number||""} onChange={e=>updateDraftField("po_number",e.target.value)} placeholder="e.g. PO-2026-001"/>
+                      </div>
+                      <div className="form-group" style={{margin:0}}>
+                        <label>Notes</label>
+                        <input value={draft.notes||""} onChange={e=>updateDraftField("notes",e.target.value)} placeholder="Optional notes…"/>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Draft items */}
+                <div className="card">
+                  <div className="card-header"><h3>Items ({draft.items.length})</h3></div>
+                  {draft.items.length===0
+                    ?<div style={{padding:20,textAlign:"center",color:"var(--text3)"}}>Search and add products from the right →</div>
+                    :<div className="tbl-wrap">
+                      <table><thead><tr><th>SKU</th><th>Product</th><th>Cost</th><th>Qty</th><th>Total</th><th></th></tr></thead>
+                        <tbody>{draft.items.map(i=>(
+                          <tr key={i.pid}>
+                            <td><code style={{fontSize:10}}>{i.sku||"—"}</code></td>
+                            <td style={{fontSize:12}}>{i.name.slice(0,28)}{i.name.length>28?"…":""}</td>
+                            <td style={{fontSize:12}}>{fmt(i.cost)}</td>
+                            <td><input type="number" min={1} max={i.maxQty} value={i.qty} onChange={e=>updateItem(i.pid,e.target.value)} style={{width:60,textAlign:"center"}}/></td>
+                            <td style={{fontWeight:600}}>{fmt(i.cost*i.qty)}</td>
+                            <td><button className="btn btn-danger btn-xs" onClick={()=>removeItem(i.pid)}>✕</button></td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  }
+                  {draft.items.length>0&&(
+                    <div style={{padding:"12px 16px",borderTop:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span style={{fontFamily:"Syne",fontWeight:700,color:"var(--accent)"}}>
+                        Total Cost: {fmt(draft.items.reduce((s,i)=>s+i.cost*i.qty,0))}
+                      </span>
+                      <button className="btn btn-primary" onClick={completeTransfer} disabled={completing}>
+                        {completing?"Processing…":"✅ Complete Transfer Order"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Product search */}
+              <div className="card">
+                <div className="card-header"><h3>Add Products</h3></div>
+                <div style={{padding:"12px 16px"}}>
+                  <div className="search-wrap"><span className="search-icon">🔍</span>
+                    <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search inventory…"/>
+                  </div>
+                </div>
+                <div className="tbl-wrap" style={{maxHeight:480,overflowY:"auto"}}>
+                  <table><thead><tr><th>Barcode</th><th>Name</th><th>Stock</th><th></th></tr></thead>
+                    <tbody>{filteredProds.slice(0,50).map(p=>(
+                      <tr key={p.id}>
+                        <td><code style={{fontSize:11}}>{p.barcode||"—"}</code></td>
+                        <td style={{fontSize:12}}>{p.name}</td>
+                        <td style={{fontWeight:700}}>{p.stock}</td>
+                        <td><button className="btn btn-primary btn-xs"
+                          disabled={!!draft.items.find(i=>i.pid===p.id)}
+                          onClick={()=>addItem(p)}>
+                          {draft.items.find(i=>i.pid===p.id)?"✓":"Add"}
+                        </button></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* History */}
       {tab==="history"&&(
         <div>
-          {transfers.map(tr=>(
+          {completedTransfers.map(tr=>(
             <div key={tr.id} className="card mb-3">
               <div className="card-header">
                 <div>
                   <div style={{fontFamily:"Syne",fontWeight:700}}>{tr.id}</div>
-                  <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>→ {tr.store_name} · {tr.date} · {tr.items.length} items</div>
+                  <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>→ {tr.store_name} · {tr.date} · {(tr.items||[]).length} items</div>
+                  {tr.po_number&&<div style={{fontSize:11,color:"var(--accent)",marginTop:2}}>PO #: {tr.po_number}</div>}
                   {tr.notes&&<div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{tr.notes}</div>}
                 </div>
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -2198,21 +2351,21 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
               </div>
               <div className="tbl-wrap">
                 <table><thead><tr><th>SKU</th><th>Barcode</th><th>Product</th><th>Qty</th><th>Unit Cost</th><th>Total</th></tr></thead>
-                  <tbody>{tr.items.map((item,i)=>(
+                  <tbody>{(tr.items||[]).map((item,i)=>(
                     <tr key={i}><td><code style={{fontSize:10}}>{item.sku}</code></td><td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td><td style={{fontSize:12}}>{item.name}</td><td>{item.qty}</td><td>{fmt(item.cost)}</td><td style={{fontWeight:600}}>{fmt(item.qty*item.cost)}</td></tr>
                   ))}
-                  {tr.items.length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
+                  {(tr.items||[]).length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
                     <td colSpan={3}>TOTALS</td>
-                    <td style={{color:"var(--accent)"}}>{tr.items.reduce((s,i)=>s+i.qty,0)}</td>
+                    <td style={{color:"var(--accent)"}}>{(tr.items||[]).reduce((s,i)=>s+i.qty,0)}</td>
                     <td></td>
-                    <td style={{color:"var(--accent)"}}>{fmt(tr.items.reduce((s,i)=>s+i.qty*i.cost,0))}</td>
+                    <td style={{color:"var(--accent)"}}>{fmt((tr.items||[]).reduce((s,i)=>s+i.qty*i.cost,0))}</td>
                   </tr>}
                   </tbody>
                 </table>
               </div>
             </div>
           ))}
-          {transfers.length===0&&<div className="empty"><div className="ei">🏪</div><p>No transfers yet.</p></div>}
+          {completedTransfers.length===0&&<div className="empty"><div className="ei">🏪</div><p>No completed transfers yet.</p></div>}
         </div>
       )}
     </>
@@ -2247,27 +2400,14 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
     if (!refundItems.length) { showToast("Select at least one item to refund","err"); return; }
     setProcessing(true);
 
-    // Calculate refund amount (partial qty aware)
-    const refundSubtotal = refundItems.reduce((s,i) => s + i.qty * i.unit_price, 0);
-    const taxRate = order.tax_rate || 0;
-    const refundTax = Math.round(refundSubtotal * taxRate / 100);
-    const refundTotal = refundSubtotal + refundTax;
+    const isConsignment = order.type==="consignment";
 
-    // Previously refunded amount (so we don't double-count)
-    const alreadyRefunded = order.refunded_total || 0;
-    const newRefundedTotal = alreadyRefunded + refundTotal;
-
-    // Determine new status: fully refunded if refunded_total >= original total
+    // Determine new status
     const allItemsReturned = (order.items||[]).every(oi => {
       const ri = refundItems.find(r=>r.product_id===oi.product_id);
       return ri && ri.qty >= oi.qty;
     });
     const newStatus = allItemsReturned ? "refunded" : "partial_refund";
-
-    // New totals after refund (for analytics exclusion)
-    const newTotal = Math.max(0, (order.total||0) - refundTotal);
-    const newSubtotal = Math.max(0, (order.subtotal||0) - refundSubtotal);
-    const newTaxAmount = Math.max(0, (order.tax_amount||0) - refundTax);
 
     // Return items to stock
     for (const item of refundItems) {
@@ -2279,30 +2419,39 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
       }
     }
 
-    // Update order with new status + reduced totals + refunded_total tracking
-    await supabase.from("orders").update({
-      status: newStatus,
-      total: newTotal,
-      subtotal: newSubtotal,
-      tax_amount: newTaxAmount,
-      refunded_total: newRefundedTotal
-    }).eq("id", order.id);
+    let updatePayload = { status: newStatus };
+    let toastMsg = `${refundItems.length} item(s) returned to stock`;
 
-    setOrders(prev=>prev.map(o=>o.id===order.id?{
-      ...o, status:newStatus, total:newTotal,
-      subtotal:newSubtotal, tax_amount:newTaxAmount, refunded_total:newRefundedTotal
-    }:o));
+    if (!isConsignment) {
+      // Only adjust financials for non-consignment orders
+      const refundSubtotal = refundItems.reduce((s,i) => s + i.qty * i.unit_price, 0);
+      const taxRate = order.tax_rate || 0;
+      const refundTax = Math.round(refundSubtotal * taxRate / 100);
+      const refundTotal = refundSubtotal + refundTax;
+      const alreadyRefunded = order.refunded_total || 0;
+      const newTotal = Math.max(0, (order.total||0) - refundTotal);
+      const newSubtotal = Math.max(0, (order.subtotal||0) - refundSubtotal);
+      const newTaxAmount = Math.max(0, (order.tax_amount||0) - refundTax);
+      updatePayload = { ...updatePayload, total:newTotal, subtotal:newSubtotal, tax_amount:newTaxAmount, refunded_total:alreadyRefunded+refundTotal };
+      toastMsg = `Refund processed — ${fmt(refundTotal)} deducted, ` + toastMsg;
+      setOrders(prev=>prev.map(o=>o.id===order.id?{...o,...updatePayload,total:newTotal,subtotal:newSubtotal,tax_amount:newTaxAmount,refunded_total:alreadyRefunded+refundTotal}:o));
+    } else {
+      toastMsg = "Consignment return — " + toastMsg + " (no financial adjustment)";
+      setOrders(prev=>prev.map(o=>o.id===order.id?{...o,status:newStatus}:o));
+    }
+
+    await supabase.from("orders").update(updatePayload).eq("id", order.id);
 
     // Log
     try { await supabase.from("activity_log").insert({
       action:"refund_processed",
-      details:`Refund of ${refundItems.length} item(s) totaling ${fmt(refundTotal)} on order ${order.id}. Order total reduced to ${fmt(newTotal)}.`,
+      details:`${isConsignment?"Consignment return":"Refund"} of ${refundItems.length} item(s) on order ${order.id}.${isConsignment?"":" Order total adjusted."}`,
       entity_type:"order", entity_id:String(order.id),
       user_name:"Admin", timestamp:new Date().toISOString()
     }); } catch(e) {}
 
     setProcessing(false);
-    showToast(`Refund processed — ${fmt(refundTotal)} deducted, ${refundItems.length} item(s) returned to stock`);
+    showToast(toastMsg);
     onClose();
   };
 
@@ -2398,7 +2547,6 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
               <th>Type</th>
               <th>Payment</th>
               <SortTh label="Total" sortKey="total" current={key} dir={dir} onToggle={toggle}/>
-              <th>Status</th>
               <th>Actions</th>
             </tr></thead>
             <tbody>{pg.sliced.map(o => (
@@ -2534,7 +2682,32 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
       await supabase.from("orders").update({ status: newOrderStatus }).eq("id", order.id);
       setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: newOrderStatus} : o));
 
-      if (fullyComplete) {
+      if (isBackorder && backorderRecord && shippedItems.length > 0) {
+        // Create a NEW invoice for the backorder shipment instead of modifying the original
+        const newInvId = order.id + "-B" + Date.now().toString().slice(-4);
+        const customer = order.customer_name;
+        const invSubtotal = shippedItems.reduce((s,i)=>s+(i.unit_price||0)*i.qty_shipped,0);
+        const taxRate = order.tax_rate || 0;
+        const invTax = Math.round(invSubtotal * taxRate / 100);
+        const invTotal = invSubtotal + invTax;
+        const invItems = shippedItems.map(i=>({product_id:i.product_id,name:i.name,qty:i.qty_shipped,unit_price:i.unit_price||0,barcode:i.barcode||""}));
+        const newInv = {
+          id: newInvId, customer_id: order.customer_id, customer_name: customer,
+          date: today(), status: "invoiced", type: order.type||"standard",
+          payment_method: order.payment_method||"", tax_rate: taxRate,
+          subtotal: invSubtotal, tax_amount: invTax, total: invTotal,
+          notes: `Backorder shipment from ${order.id}`, items: invItems,
+          created_at: new Date().toISOString()
+        };
+        const {data:savedInv} = await supabase.from("orders").insert({...newInv,items:undefined}).select().single();
+        if(savedInv){
+          await supabase.from("order_items").insert(invItems.map(i=>({...i,order_id:newInvId})));
+          setOrders(prev=>[{...newInv,id:savedInv.id||newInvId},...prev]);
+          showToast(`Backorder shipped → new Invoice ${savedInv.id||newInvId} created ✓`);
+        } else {
+          showToast("Backorder shipped (invoice creation failed — check DB)","warn");
+        }
+      } else if (fullyComplete) {
         showToast(`Order ${order.id} fully shipped → converted to Invoice ✓`);
       } else if (newBackorders.length > 0) {
         showToast(`Shipped partial — ${newBackorders.length} item(s) backordered`);
@@ -2719,7 +2892,8 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
   const [showRefund,setShowRefund]=useState(null);
 
   const filtered=useMemo(()=>orders.filter(o=>{
-    if(o.status!=="invoiced")return false;
+    const invoiceStatuses=["invoiced","paid","delivered","cancelled","refunded","partial_refund"];
+    if(!invoiceStatuses.includes(o.status))return false;
     if(filterStatus!=="all"&&o.status!==filterStatus)return false;
     if(filterDate&&!o.date?.startsWith(filterDate))return false;
     const q=search.toLowerCase();
@@ -2791,20 +2965,15 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
                 <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
-                <td>
-                  <select value={o.status} onChange={e=>updateStatus(o.id,e.target.value)} style={{padding:"3px 6px",fontSize:11,width:"auto",background:"var(--bg3)"}}>
-                    {["invoiced","paid","delivered","cancelled","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
-                  </select>
-                </td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>View</button>
-                  <button className="btn btn-ghost btn-xs" onClick={()=>{ const c=customers.find(x=>x.id===o.customer_id); printInvoice(o,c,settings); }}>Print</button>
+                  <button className="btn btn-ghost btn-xs" onClick={()=>{ const c=customers.find(x=>x.id===o.customer_id); printInvoice(o,c,settings,c?.customer_type==="consignment"||o.type==="consignment"); }}>Print</button>
                   <button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>
                   {(o.status==="invoiced"||o.status==="shipped"||o.status==="delivered"||o.status==="paid")&&<button className="btn btn-warn btn-xs" onClick={()=>setShowRefund(o)}>↩ Refund</button>}
                 </div></td>
               </tr>
             ))}
-            {pg.sliced.length===0&&<tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No invoices found.</td></tr>}
+            {pg.sliced.length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No invoices found.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -4081,7 +4250,8 @@ function ActivityLogPage({ activityLog, setActivityLog }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
-
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [rlsBlocked, setRlsBlocked] = useState(false);
 
   useEffect(()=>{
@@ -4106,17 +4276,32 @@ function ActivityLogPage({ activityLog, setActivityLog }) {
     "settings_updated":"var(--text3)"
   };
 
-  const filtered = filter==="all" ? logs : logs.filter(l=>l.entity_type===filter);
+  const filtered = logs.filter(l=>{
+    if(filter!=="all"&&l.entity_type!==filter)return false;
+    if(dateFrom){const d=l.timestamp?.slice(0,10);if(!d||d<dateFrom)return false;}
+    if(dateTo){const d=l.timestamp?.slice(0,10);if(!d||d>dateTo)return false;}
+    return true;
+  });
+
+  const clearDates=()=>{setDateFrom("");setDateTo("");};
 
   return (
     <div>
       <div className="alert alert-info" style={{marginBottom:16}}>📋 Read-only activity log — all actions are recorded and cannot be edited.</div>
-      <div className="filter-bar" style={{marginBottom:16}}>
+      <div className="filter-bar" style={{marginBottom:8,flexWrap:"wrap",gap:6}}>
         {["all","product","customer","order","transfer","stock_take"].map(f=>(
           <button key={f} className={`btn btn-sm ${filter===f?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(f)}>
             {f==="all"?"All":f.charAt(0).toUpperCase()+f.slice(1).replace("_"," ")}
           </button>
         ))}
+      </div>
+      <div className="filter-bar" style={{marginBottom:16,gap:8}}>
+        <label style={{fontSize:12,color:"var(--text2)",alignSelf:"center"}}>Date range:</label>
+        <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{width:"auto",padding:"5px 8px",fontSize:12}} title="From date"/>
+        <span style={{fontSize:12,color:"var(--text3)",alignSelf:"center"}}>to</span>
+        <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{width:"auto",padding:"5px 8px",fontSize:12}} title="To date"/>
+        {(dateFrom||dateTo)&&<button className="btn btn-ghost btn-xs" onClick={clearDates}>✕ Clear</button>}
+        {(dateFrom||dateTo)&&<span style={{fontSize:11,color:"var(--text3)",alignSelf:"center"}}>{filtered.length} results</span>}
       </div>
       <div className="card">
         <div className="card-header"><h3>🕐 Activity Log ({filtered.length} entries)</h3></div>
