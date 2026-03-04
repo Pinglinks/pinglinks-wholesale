@@ -1151,17 +1151,22 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
   const selectAll = () => setSelected(pg.sliced.map(p=>p.id));
   const clearSelect = () => setSelected([]);
 
-  const batchArchive = () => {
+  const batchArchive = async () => {
+    const toArchive = products.filter(p=>selected.includes(p.id));
+    const blocked = toArchive.filter(p=>p.stock>0||((purchaseOrders||[]).filter(po=>po.status==="open"||po.status==="partial").flatMap(po=>po.items||[]).filter(i=>i.product_id===p.id).reduce((s,i)=>s+((i.ordered_qty||0)-(i.received_qty||0)),0))>0);
+    if(blocked.length>0){showToast(`Cannot archive ${blocked.length} product(s) with stock or incoming orders`,"err");return;}
+    for(const p of toArchive){
+      await supabase.from("products").update({active:false}).eq("id",p.id);
+      try{await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+    }
     setProducts(p=>p.map(x=>selected.includes(x.id)?{...x,active:false}:x));
-    showToast(`${selected.length} products archived`); clearSelect();
+    showToast(`${toArchive.length} products archived`); clearSelect();
   };
-  const batchDelete = () => {
-    if (!window.confirm(`Permanently delete ${selected.length} products?`)) return;
-    setProducts(p=>p.filter(x=>!selected.includes(x.id)));
-    showToast(`${selected.length} products deleted`,"ok"); clearSelect();
+  const restore = async (id) => {
+    await supabase.from("products").update({active:true}).eq("id",id);
+    try{const p=products.find(x=>x.id===id);await supabase.from("activity_log").insert({action:"product_updated",details:`Unarchived: ${p?.name}`,entity_type:"product",entity_id:id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+    setProducts(p=>p.map(x=>x.id===id?{...x,active:true}:x)); showToast("Product unarchived");
   };
-  const restore = (id) => { setProducts(p=>p.map(x=>x.id===id?{...x,active:true}:x)); showToast("Product restored"); };
-  const hardDelete = (id) => { if(!window.confirm("Delete permanently?"))return; setProducts(p=>p.filter(x=>x.id!==id)); showToast("Deleted"); };
 
   const downloadTemplate = () => {
     const rows = [
@@ -1299,7 +1304,6 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
           <span>{selected.length} selected</span>
           <div className="btn-group">
             <button className="btn btn-warn btn-xs" onClick={batchArchive}>Archive Selected</button>
-            <button className="btn btn-danger btn-xs" onClick={batchDelete}>Delete Selected</button>
             <button className="btn btn-ghost btn-xs" onClick={clearSelect}>Clear</button>
           </div>
         </div>
@@ -1367,8 +1371,15 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
                       <div className="tbl-actions">
                         <button className="btn btn-ghost btn-xs" onClick={()=>setShowHistory(p)}>History</button>
                         <button className="btn btn-secondary btn-xs" onClick={()=>{setEditing(p);setShowModal(true);}}>Edit</button>
-                        {!p.active?<button className="btn btn-ghost btn-xs" onClick={()=>restore(p.id)}>Restore</button>:<button className="btn btn-warn btn-xs" onClick={async()=>{await supabase.from("products").update({active:false}).eq("id",p.id);try { await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()}); } catch(e) {}setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");}}>Archive</button>}
-                        <button className="btn btn-danger btn-xs" onClick={()=>hardDelete(p.id)}>Del</button>
+                        {!p.active
+                          ? <button className="btn btn-secondary btn-xs" onClick={()=>restore(p.id)}>Unarchive</button>
+                          : <button className="btn btn-warn btn-xs" title={p.stock>0||incomingQty>0?"Cannot archive: has stock or incoming orders":""} onClick={async()=>{
+                              if(p.stock>0){showToast("Cannot archive — product has stock on hand","err");return;}
+                              if(incomingQty>0){showToast("Cannot archive — product has incoming stock on open POs","err");return;}
+                              await supabase.from("products").update({active:false}).eq("id",p.id);
+                              try{await supabase.from("activity_log").insert({action:"product_archived",details:`Archived: ${p.name}`,entity_type:"product",entity_id:p.id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+                              setProducts(prev=>prev.map(x=>x.id===p.id?{...x,active:false}:x));showToast("Archived");
+                            }} style={{opacity:p.stock>0||incomingQty>0?0.45:1}}>Archive</button>}
                       </div>
                     </td>
                   </tr>
@@ -2065,8 +2076,11 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
 // ─── TRANSFERS PAGE ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function TransfersPage({ products, setProducts, transfers, setTransfers, stores, settings, showToast }) {
-  // draft = null means no open draft. draft = { id, store_id, store_name, po_number, notes, items[] } = open transfer
-  const [draft, setDraft] = useState(null);
+  // Restore any existing draft from the transfers list (survives navigation)
+  const [draft, setDraft] = useState(() => {
+    const existing = transfers.find(t=>t.status==="draft");
+    return existing || null;
+  });
   const [showNewForm, setShowNewForm] = useState(false);
   const [newStore, setNewStore] = useState(stores[0]?.id||"");
   const [newPO, setNewPO] = useState("");
@@ -2105,21 +2119,29 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
     showToast(`Transfer ${id} opened — add items then complete`);
   };
 
-  // ── Add item to draft ──
-  const addItem = (product) => {
+  // ── Add item to draft (persists to DB immediately) ──
+  const addItem = async (product) => {
     if(!draft) return;
     if(draft.items.find(i=>i.pid===product.id)) return;
-    const newItem = {pid:product.id,sku:product.sku,barcode:product.barcode||"",name:product.name,cost:product.cost,qty:1,maxQty:product.stock};
+    const newItem = {pid:product.id,sku:product.sku||"",barcode:product.barcode||"",name:product.name,cost:product.cost,qty:1,maxQty:product.stock};
+    // Persist to transfer_items so it survives navigation
+    await supabase.from("transfer_items").upsert({transfer_id:draft.id,product_id:product.id,name:product.name,sku:product.sku||"",barcode:product.barcode||"",qty:1,cost:product.cost},{onConflict:"transfer_id,product_id",ignoreDuplicates:false});
     const updated = {...draft, items:[...draft.items, newItem]};
     setDraft(updated);
     setTransfers(p=>p.map(t=>t.id===draft.id?updated:t));
   };
 
-  const updateItem = (pid, qty) => {
+  const updateItem = async (pid, qty) => {
     if(!draft) return;
     let updated;
-    if(+qty<=0) updated = {...draft, items:draft.items.filter(i=>i.pid!==pid)};
-    else updated = {...draft, items:draft.items.map(i=>i.pid===pid?{...i,qty:Math.min(+qty,i.maxQty)}:i)};
+    if(+qty<=0){
+      await supabase.from("transfer_items").delete().eq("transfer_id",draft.id).eq("product_id",pid);
+      updated = {...draft, items:draft.items.filter(i=>i.pid!==pid)};
+    } else {
+      const newQty = Math.min(+qty, draft.items.find(i=>i.pid===pid)?.maxQty||999);
+      await supabase.from("transfer_items").update({qty:newQty}).eq("transfer_id",draft.id).eq("product_id",pid);
+      updated = {...draft, items:draft.items.map(i=>i.pid===pid?{...i,qty:newQty}:i)};
+    }
     setDraft(updated);
     setTransfers(p=>p.map(t=>t.id===draft.id?updated:t));
   };
@@ -2790,7 +2812,15 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
 // ─────────────────────────────────────────────────────────────────────────────
 function BackordersPage({ backorders, setBackorders, orders, setOrders, customers, settings, showToast, products, setProducts }) {
   const [search, setSearch] = useState("");
-  const [shipModal, setShipModal] = useState(null); // { order, backorderRecord }
+  const [tab, setTab] = useState("open");
+  const [shipModal, setShipModal] = useState(null);
+
+  const filterBOs = (status) => useMemo(() => backorders.filter(b => {
+    if (b.status !== status) return false;
+    const q = search.toLowerCase();
+    if (q && !b.order_id?.toLowerCase().includes(q) && !b.product_name?.toLowerCase().includes(q)) return false;
+    return true;
+  }), [backorders, search, tab]);
 
   const openBackorders = useMemo(() => backorders.filter(b => {
     if (b.status !== "open") return false;
@@ -2798,6 +2828,27 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
     if (q && !b.order_id?.toLowerCase().includes(q) && !b.product_name?.toLowerCase().includes(q)) return false;
     return true;
   }), [backorders, search]);
+
+  const cancelledBackorders = useMemo(() => backorders.filter(b => {
+    if (b.status !== "cancelled") return false;
+    const q = search.toLowerCase();
+    if (q && !b.order_id?.toLowerCase().includes(q) && !b.product_name?.toLowerCase().includes(q)) return false;
+    return true;
+  }), [backorders, search]);
+
+  const cancelBackorder = async (b) => {
+    if(!window.confirm(`Cancel backorder for "${b.product_name}" (${b.qty_remaining} remaining)? This cannot be undone.`)) return;
+    await supabase.from("backorders").update({status:"cancelled"}).eq("id",b.id);
+    setBackorders(prev=>prev.map(x=>x.id===b.id?{...x,status:"cancelled"}:x));
+    // Check if all backorders for this order are now cancelled/fulfilled
+    const remaining = backorders.filter(x=>x.order_id===b.order_id&&x.id!==b.id&&x.status==="open");
+    if(remaining.length===0){
+      await supabase.from("orders").update({status:"invoiced"}).eq("id",b.order_id);
+      setOrders(prev=>prev.map(o=>o.id===b.order_id?{...o,status:"invoiced"}:o));
+    }
+    try{await supabase.from("activity_log").insert({action:"order_status",details:`Backorder cancelled for ${b.product_name} on order ${b.order_id}`,entity_type:"order",entity_id:b.order_id,user_name:"Admin",timestamp:new Date().toISOString()});}catch(e){}
+    showToast("Backorder cancelled");
+  };
 
   // Group by order_id
   const grouped = useMemo(() => {
@@ -2809,15 +2860,33 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
     return map;
   }, [openBackorders]);
 
+  const groupedCancelled = useMemo(() => {
+    const map = {};
+    cancelledBackorders.forEach(b => {
+      if (!map[b.order_id]) map[b.order_id] = [];
+      map[b.order_id].push(b);
+    });
+    return map;
+  }, [cancelledBackorders]);
+
   return (
     <>
-      <div className="filter-bar">
-        <div className="search-wrap" style={{flex:2}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8}}>
+        <div className="tabs" style={{margin:0}}>
+          <button className={`tab ${tab==="open"?"active":""}`} onClick={()=>setTab("open")}>
+            Open {openBackorders.length>0&&<span className="badge bb" style={{fontSize:9,marginLeft:4}}>{openBackorders.length}</span>}
+          </button>
+          <button className={`tab ${tab==="cancelled"?"active":""}`} onClick={()=>setTab("cancelled")}>
+            Cancelled {cancelledBackorders.length>0&&<span className="badge br" style={{fontSize:9,marginLeft:4}}>{cancelledBackorders.length}</span>}
+          </button>
+        </div>
+        <div className="search-wrap" style={{flex:2,maxWidth:320}}>
           <span className="search-icon">🔍</span>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by order # or product…"/>
         </div>
       </div>
 
+      {tab==="open"&&<>
       {Object.keys(grouped).length === 0 && (
         <div className="empty"><div className="ei">📭</div><p>No open back orders.</p></div>
       )}
@@ -2850,9 +2919,10 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                       <td style={{textAlign:"center"}}>{b.qty_shipped}</td>
                       <td style={{textAlign:"center",color:"var(--warn)",fontWeight:600}}>{b.qty_remaining}</td>
                       <td>
-                        <button className="btn btn-primary btn-xs" onClick={()=>setShipModal({order, backorderRecord: b})}>
-                          🚚 Ship
-                        </button>
+                        <div className="tbl-actions">
+                          <button className="btn btn-primary btn-xs" onClick={()=>setShipModal({order, backorderRecord: b})}>🚚 Ship</button>
+                          <button className="btn btn-warn btn-xs" onClick={()=>cancelBackorder(b)}>✕ Cancel</button>
+                        </div>
                       </td>
                     </tr>
                   ))}</tbody>
@@ -2862,6 +2932,45 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
           </div>
         );
       })}
+      </>}
+
+      {tab==="cancelled"&&<>
+        {Object.keys(groupedCancelled).length===0&&<div className="empty"><div className="ei">✓</div><p>No cancelled back orders.</p></div>}
+        {Object.entries(groupedCancelled).map(([orderId, items]) => {
+          const order = orders.find(o=>o.id===orderId);
+          return (
+            <div key={orderId} className="card" style={{marginBottom:14,opacity:0.8}}>
+              <div className="card-header">
+                <div>
+                  <div style={{fontFamily:"Syne",fontWeight:700}}>{orderId}</div>
+                  <div style={{fontSize:11,color:"var(--text2)",marginTop:2}}>{order?.customer_name} · Ordered {order?.date}</div>
+                </div>
+                <span className="badge br">Cancelled</span>
+              </div>
+              <div className="card-body" style={{padding:0}}>
+                <div className="tbl-wrap">
+                  <table>
+                    <thead><tr>
+                      <th>Product</th>
+                      <th style={{textAlign:"center"}}>Ordered</th>
+                      <th style={{textAlign:"center"}}>Shipped</th>
+                      <th style={{textAlign:"center"}}>Cancelled Qty</th>
+                    </tr></thead>
+                    <tbody>{items.map(b=>(
+                      <tr key={b.id} style={{opacity:0.75}}>
+                        <td style={{fontWeight:500}}>{b.product_name}</td>
+                        <td style={{textAlign:"center"}}>{b.qty_ordered}</td>
+                        <td style={{textAlign:"center"}}>{b.qty_shipped}</td>
+                        <td style={{textAlign:"center",color:"var(--danger)",fontWeight:600}}>{b.qty_remaining}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </>}
 
       {shipModal && (
         <ShipOrderModal
@@ -2964,7 +3073,13 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>{fmt(o.total)}</td>
+                <td style={{fontWeight:600,color:"var(--accent)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                    {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
+                    {o.status==="refunded"&&<span className="badge br" style={{fontSize:9}}>↩ Refunded</span>}
+                    {o.status==="partial_refund"&&<span className="badge bo" style={{fontSize:9}}>↩ Part. Refund</span>}
+                  </div>
+                </td>
                 <td><div className="tbl-actions">
                   <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>View</button>
                   <button className="btn btn-ghost btn-xs" onClick={()=>{ const c=customers.find(x=>x.id===o.customer_id); printInvoice(o,c,settings,c?.customer_type==="consignment"||o.type==="consignment"); }}>Print</button>
@@ -4246,6 +4361,190 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders 
   );
 }
 
+// ─── DATE RANGE PICKER ───────────────────────────────────────────────────────
+function DateRangePicker({ dateFrom, dateTo, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [hoverDate, setHoverDate] = useState(null);
+  const [selecting, setSelecting] = useState(null); // null | "from"
+  // Two calendar months shown
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayStr = today.toISOString().slice(0,10);
+  const [leftYear,  setLeftYear]  = useState(dateFrom ? parseInt(dateFrom.slice(0,4)) : today.getFullYear());
+  const [leftMonth, setLeftMonth] = useState(dateFrom ? parseInt(dateFrom.slice(5,7))-1 : today.getMonth());
+
+  // Right calendar = left + 1 month
+  const rightDate = new Date(leftYear, leftMonth+1, 1);
+  const rightYear  = rightDate.getFullYear();
+  const rightMonth = rightDate.getMonth();
+
+  const fmt = (s) => {
+    if(!s) return "";
+    const [y,m,d] = s.split("-");
+    return `${d}-${m}-${y}`;
+  };
+
+  const displayLabel = () => {
+    if(!dateFrom && !dateTo) return "All dates";
+    if(dateFrom && dateTo) return `${fmt(dateFrom)} – ${fmt(dateTo)}`;
+    if(dateFrom) return `From ${fmt(dateFrom)}`;
+    return `To ${fmt(dateTo)}`;
+  };
+
+  const applyPreset = (preset) => {
+    const now = new Date(); now.setHours(0,0,0,0);
+    const iso = (d) => d.toISOString().slice(0,10);
+    const offset = (n) => { const d=new Date(now); d.setDate(d.getDate()+n); return iso(d); };
+    let f="", t="";
+    if(preset==="today")     { f=todayStr; t=todayStr; }
+    else if(preset==="yesterday") { f=offset(-1); t=offset(-1); }
+    else if(preset==="7days")  { f=offset(-6); t=todayStr; }
+    else if(preset==="30days") { f=offset(-29); t=todayStr; }
+    else if(preset==="month")  { const d=new Date(now.getFullYear(),now.getMonth(),1); f=iso(d); t=todayStr; }
+    else if(preset==="lastmonth") {
+      const s=new Date(now.getFullYear(),now.getMonth()-1,1);
+      const e=new Date(now.getFullYear(),now.getMonth(),0);
+      f=iso(s); t=iso(e);
+    }
+    onChange(f,t);
+    if(f){ setLeftYear(parseInt(f.slice(0,4))); setLeftMonth(parseInt(f.slice(5,7))-1); }
+    setOpen(false);
+    setSelecting(null);
+  };
+
+  const handleDayClick = (ds) => {
+    if(!selecting || selecting==="from") {
+      // start new selection
+      onChange(ds,"");
+      setSelecting("to");
+    } else {
+      // second click = end
+      if(ds < dateFrom) { onChange(ds, dateFrom); }
+      else              { onChange(dateFrom, ds); }
+      setSelecting(null);
+      setOpen(false);
+    }
+  };
+
+  const isInRange = (ds) => {
+    const anchor = dateFrom;
+    const end = selecting==="to" ? (hoverDate||dateTo) : dateTo;
+    if(!anchor || !end) return false;
+    const [lo,hi] = anchor<=end ? [anchor,end] : [end,anchor];
+    return ds>lo && ds<hi;
+  };
+
+  const isStart = (ds) => ds===dateFrom;
+  const isEnd   = (ds) => ds===(selecting==="to"&&hoverDate ? hoverDate : dateTo);
+
+  const renderCalendar = (year, month, onPrev, onNext, showPrev, showNext) => {
+    const DAYS = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+    const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const cells = [];
+    for(let i=0;i<firstDay;i++) cells.push(null);
+    for(let d=1;d<=daysInMonth;d++) cells.push(d);
+    while(cells.length%7!==0) cells.push(null);
+
+    return (
+      <div style={{flex:1,minWidth:220}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,padding:"0 4px"}}>
+          {showPrev
+            ? <button onClick={onPrev} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,padding:"2px 6px",color:"var(--text2)"}}>‹</button>
+            : <span style={{width:28}}/>}
+          <div style={{display:"flex",gap:4,alignItems:"center"}}>
+            <select value={month} onChange={e=>{ const nm=parseInt(e.target.value); if(showPrev){setLeftMonth(nm);} }} style={{fontSize:12,border:"1px solid var(--border)",borderRadius:4,padding:"2px 4px",background:"var(--bg3)"}}>
+              {MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}
+            </select>
+            <select value={year} onChange={e=>{ if(showPrev) setLeftYear(parseInt(e.target.value)); }} style={{fontSize:12,border:"1px solid var(--border)",borderRadius:4,padding:"2px 4px",background:"var(--bg3)"}}>
+              {Array.from({length:6},(_,i)=>today.getFullYear()-2+i).map(y=><option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+          {showNext
+            ? <button onClick={onNext} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,padding:"2px 6px",color:"var(--text2)"}}>›</button>
+            : <span style={{width:28}}/>}
+        </div>
+        <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
+          <thead><tr>{DAYS.map(d=><th key={d} style={{fontSize:11,color:"var(--text3)",padding:"2px 0",textAlign:"center",fontWeight:600}}>{d}</th>)}</tr></thead>
+          <tbody>
+            {Array.from({length:cells.length/7},(_,ri)=>(
+              <tr key={ri}>
+                {cells.slice(ri*7,ri*7+7).map((d,ci)=>{
+                  if(!d) return <td key={ci}/>;
+                  const ds = `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+                  const start=isStart(ds), end=isEnd(ds), inRange=isInRange(ds), isToday=ds===todayStr;
+                  const bg = start||end ? "var(--accent)" : inRange ? "var(--accent)22" : "transparent";
+                  const color = start||end ? "#000" : inRange ? "var(--accent)" : isToday ? "var(--accent)" : "var(--text)";
+                  const fontWeight = start||end||isToday ? 700 : 400;
+                  return (
+                    <td key={ci} style={{padding:"1px 0",textAlign:"center"}}>
+                      <div
+                        onClick={()=>handleDayClick(ds)}
+                        onMouseEnter={()=>selecting==="to"&&setHoverDate(ds)}
+                        onMouseLeave={()=>setHoverDate(null)}
+                        style={{width:28,height:28,lineHeight:"28px",margin:"0 auto",borderRadius:"50%",cursor:"pointer",fontSize:12,background:bg,color,fontWeight,userSelect:"none"}}
+                      >{d}</div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  const prevMonth = () => { if(leftMonth===0){setLeftMonth(11);setLeftYear(y=>y-1);}else setLeftMonth(m=>m-1); };
+  const nextMonth = () => { if(leftMonth===11){setLeftMonth(0);setLeftYear(y=>y+1);}else setLeftMonth(m=>m+1); };
+
+  return (
+    <div style={{position:"relative",display:"inline-block"}}>
+      <div
+        onClick={()=>{setOpen(o=>!o); setSelecting("from");}}
+        style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",border:"1px solid var(--border)",borderRadius:8,cursor:"pointer",background:"var(--bg2)",fontSize:13,minWidth:220,userSelect:"none"}}
+      >
+        <span style={{fontSize:14}}>📅</span>
+        <span style={{flex:1,color:dateFrom||dateTo?"var(--text)":"var(--text3)"}}>{displayLabel()}</span>
+        {(dateFrom||dateTo)&&<span onClick={e=>{e.stopPropagation();onChange("","");setSelecting(null);}} style={{fontSize:12,color:"var(--text3)",cursor:"pointer",padding:"0 2px"}}>✕</span>}
+        <span style={{fontSize:10,color:"var(--text3)"}}>{open?"▲":"▼"}</span>
+      </div>
+      {open&&(
+        <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,zIndex:999,background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:10,boxShadow:"0 8px 32px rgba(0,0,0,.18)",padding:0,minWidth:560,display:"flex"}}>
+          {/* Presets sidebar */}
+          <div style={{borderRight:"1px solid var(--border)",padding:"12px 0",minWidth:120}}>
+            {[
+              ["today","Today"],["yesterday","Yesterday"],["7days","Last 7 Days"],
+              ["30days","Last 30 Days"],["month","This Month"],["lastmonth","Last Month"]
+            ].map(([k,label])=>(
+              <div key={k} onClick={()=>applyPreset(k)}
+                style={{padding:"8px 16px",fontSize:13,cursor:"pointer",color:"var(--text2)",whiteSpace:"nowrap"}}
+                onMouseEnter={e=>e.target.style.color="var(--accent)"}
+                onMouseLeave={e=>e.target.style.color="var(--text2)"}
+              >{label}</div>
+            ))}
+            <div style={{margin:"8px 12px 4px",borderTop:"1px solid var(--border)"}}/>
+            <div style={{padding:"6px 16px 4px",fontSize:11,color:"var(--text3)"}}>Custom</div>
+            <div style={{display:"flex",gap:6,padding:"4px 12px 8px"}}>
+              <button onClick={()=>{onChange(dateFrom,dateTo);setOpen(false);setSelecting(null);}}
+                style={{padding:"5px 10px",background:"var(--accent)",color:"#000",border:"none",borderRadius:5,fontSize:12,cursor:"pointer",fontWeight:700}}>Submit</button>
+              <button onClick={()=>{onChange("","");setSelecting("from");}}
+                style={{padding:"5px 10px",background:"var(--bg3)",color:"var(--text2)",border:"1px solid var(--border)",borderRadius:5,fontSize:12,cursor:"pointer"}}>Clear</button>
+            </div>
+          </div>
+          {/* Calendars */}
+          <div style={{padding:16,display:"flex",gap:16}}>
+            {renderCalendar(leftYear, leftMonth, prevMonth, nextMonth, true, false)}
+            <div style={{width:1,background:"var(--border)"}}/>
+            {renderCalendar(rightYear, rightMonth, prevMonth, nextMonth, false, true)}
+          </div>
+        </div>
+      )}
+      {open&&<div style={{position:"fixed",inset:0,zIndex:998}} onClick={()=>{setOpen(false);setSelecting(null);setHoverDate(null);}}/>}
+    </div>
+  );
+}
+
 function ActivityLogPage({ activityLog, setActivityLog }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -4283,25 +4582,19 @@ function ActivityLogPage({ activityLog, setActivityLog }) {
     return true;
   });
 
-  const clearDates=()=>{setDateFrom("");setDateTo("");};
-
   return (
     <div>
       <div className="alert alert-info" style={{marginBottom:16}}>📋 Read-only activity log — all actions are recorded and cannot be edited.</div>
-      <div className="filter-bar" style={{marginBottom:8,flexWrap:"wrap",gap:6}}>
-        {["all","product","customer","order","transfer","stock_take"].map(f=>(
-          <button key={f} className={`btn btn-sm ${filter===f?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(f)}>
-            {f==="all"?"All":f.charAt(0).toUpperCase()+f.slice(1).replace("_"," ")}
-          </button>
-        ))}
-      </div>
-      <div className="filter-bar" style={{marginBottom:16,gap:8}}>
-        <label style={{fontSize:12,color:"var(--text2)",alignSelf:"center"}}>Date range:</label>
-        <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{width:"auto",padding:"5px 8px",fontSize:12}} title="From date"/>
-        <span style={{fontSize:12,color:"var(--text3)",alignSelf:"center"}}>to</span>
-        <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{width:"auto",padding:"5px 8px",fontSize:12}} title="To date"/>
-        {(dateFrom||dateTo)&&<button className="btn btn-ghost btn-xs" onClick={clearDates}>✕ Clear</button>}
-        {(dateFrom||dateTo)&&<span style={{fontSize:11,color:"var(--text3)",alignSelf:"center"}}>{filtered.length} results</span>}
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
+        <div className="filter-bar" style={{margin:0,flexWrap:"wrap",gap:6}}>
+          {["all","product","customer","order","transfer","stock_take"].map(f=>(
+            <button key={f} className={`btn btn-sm ${filter===f?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(f)}>
+              {f==="all"?"All":f.charAt(0).toUpperCase()+f.slice(1).replace("_"," ")}
+            </button>
+          ))}
+        </div>
+        <DateRangePicker dateFrom={dateFrom} dateTo={dateTo} onChange={(f,t)=>{setDateFrom(f);setDateTo(t);}}/>
+        {(dateFrom||dateTo)&&<span style={{fontSize:12,color:"var(--text3)"}}>{filtered.length} results</span>}
       </div>
       <div className="card">
         <div className="card-header"><h3>🕐 Activity Log ({filtered.length} entries)</h3></div>
