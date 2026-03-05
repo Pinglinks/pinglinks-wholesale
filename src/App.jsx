@@ -835,7 +835,7 @@ export default function App() {
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user} cart={cart}/>}
             {page==="hot-sellers" && <HotSellersPage products={products} user={user} addToCart={addToCart} cart={cart}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} salesReps={salesReps} showToast={showToast}/>}
-            {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders} showToast={showToast}/>}
+            {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders} products={products} showToast={showToast}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
             {page==="activitylog" && <ActivityLogPage activityLog={activityLog} setActivityLog={setActivityLog}/>}
             {page==="settings" && <SettingsPage settings={settings} setSettings={setSettings} showToast={showToast}/>}
@@ -858,7 +858,7 @@ export default function App() {
         {/* Modals */}
         {showCart && <CartModal cart={cart} updateQty={updateQty} subtotal={cartSubtotal} tax={cartTax} total={cartTotal} taxRate={settings.tax_rate} user={user} onClose={()=>setShowCart(false)} onPlace={placeOrder} customers={customers}/>}
         {modal?.type==="orderSuccess" && <OrderSuccessModal order={modal.data} settings={settings} customers={customers} onClose={()=>setModal(null)}/>}
-        {modal?.type==="viewInvoice" && <InvoiceViewModal order={modal.data} settings={settings} customers={customers} onClose={()=>setModal(null)}/>}
+        {modal?.type==="viewInvoice" && <InvoiceViewModal order={modal.data} settings={settings} customers={customers} products={products} onClose={()=>setModal(null)}/>}
 
         {/* Toast */}
         {toast && (
@@ -2721,6 +2721,34 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
     return init;
   });
   const [busy, setBusy] = useState(false);
+  const [hideCost, setHideCost] = useState(false);
+
+  const downloadOrderCSV = () => {
+    const rows = [
+      ["Order", order.id], ["Customer", order.customer_name], ["Date", order.date],
+      ["Type", order.type||"standard"], ["Payment", order.payment_method||"—"], [""],
+      ["Product","Barcode","Qty Ordered","Ship Qty","Backorder","Unit Cost","Unit Price","Line Total"],
+      ...lineItems.map(item => {
+        const prod = (typeof products!=="undefined"?products:[]).find(p=>p.id===item.product_id);
+        const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id])||0, item.qty));
+        return [
+          item.name, item.barcode||"", item.qty, toShip, item.qty-toShip,
+          Number(prod?.cost||0), Number(item.unit_price||0),
+          Number(((item.unit_price||0)*toShip).toFixed(2))
+        ];
+      }),
+      [""],
+      ["Subtotal","","","","","","",order.subtotal||0],
+      [`GCT (${order.tax_rate||0}%)`, "","","","","","",order.tax_amount||0],
+      ["Total","","","","","","",order.total||0],
+    ];
+    downloadCSV(rows, `${order.id}.csv`);
+  };
+
+  const printOrderPDF = () => {
+    const customer = { company: order.customer_name };
+    printInvoice(order, customer, typeof settings!=="undefined"?settings:{}, order.type==="consignment");
+  };
 
   const handleShip = async () => {
     setBusy(true);
@@ -2850,6 +2878,8 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
               <th style={{textAlign:"center"}}>Ordered</th>
               <th style={{textAlign:"center"}}>Ship Qty</th>
               <th style={{textAlign:"center"}}>Backorder</th>
+              {!hideCost&&<th style={{textAlign:"right",color:"var(--text3)"}}>Unit Cost</th>}
+              <th style={{textAlign:"right"}}>Unit Price</th>
             </tr></thead>
             <tbody>{lineItems.map(item => {
               const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, item.qty));
@@ -2869,6 +2899,8 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
                   <td style={{textAlign:"center",color: bo > 0 ? "var(--warn)" : "var(--text3)", fontWeight: bo > 0 ? 600 : 400}}>
                     {bo > 0 ? bo : "—"}
                   </td>
+                  {!hideCost&&<td style={{textAlign:"right",fontSize:12,color:"var(--text3)"}}>{fmt(products?.find(p=>p.id===item.product_id)?.cost||0)}</td>}
+                  <td style={{textAlign:"right",fontSize:12,fontWeight:600,color:"var(--accent)"}}>{fmt(item.unit_price||0)}</td>
                 </tr>
               );
             })}
@@ -2877,12 +2909,20 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
               <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+i.qty,0)}</td>
               <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty)),0)}</td>
               <td style={{textAlign:"center",color:"var(--warn)"}}>{lineItems.reduce((s,i)=>s+(i.qty-Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty))),0)||"—"}</td>
+              {!hideCost&&<td></td>}
+              <td style={{textAlign:"right",color:"var(--accent)"}}>{fmt(lineItems.reduce((s,i)=>s+(i.unit_price||0)*i.qty,0))}</td>
             </tr>}
             </tbody>
           </table>
         </div>
       </div>
-      <div className="modal-foot">
+      <div className="modal-foot" style={{flexWrap:"wrap",gap:8}}>
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--text2)",cursor:"pointer",marginRight:"auto"}}>
+          <input type="checkbox" checked={hideCost} onChange={e=>setHideCost(e.target.checked)}/>
+          Hide cost prices
+        </label>
+        <button className="btn btn-secondary btn-sm" onClick={downloadOrderCSV}>⬇ CSV</button>
+        <button className="btn btn-secondary btn-sm" onClick={printOrderPDF}>🖨 PDF</button>
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button className="btn btn-primary" onClick={handleShip} disabled={busy || allZero}>
           {busy ? "Processing…" : "Confirm Shipment"}
@@ -4256,7 +4296,7 @@ function IncomingStockPage({ purchaseOrders, products }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── CUSTOMER CARTS PAGE ─────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders, showToast }) {
+function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders, products, showToast }) {
   const [filter, setFilter] = useState("active");
   const [selected, setSelected] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -4339,10 +4379,10 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders,
             active.forEach(c=>{
               if(c.items.length===0){ rows.push([c.customer_name||c.customer_email,"","","(empty cart)","","","","","",0,c.updated_at||""]); return; }
               c.items.forEach((item,idx)=>{
-                const isConsign = c.customer_type==="consignment";
-                // Look up cost from products list if available
-                const prod = (typeof products!=="undefined"?products:[]).find(p=>p.id===item.pid);
-                const cost = prod?.cost||item.cost||"";
+                const prod = (products||[]).find(p=>p.id===item.pid);
+                const cost = Number(prod?.cost||item.cost||0);
+                const unitPrice = Number(item.price||0);
+                const lineTotal = Number((unitPrice * item.qty).toFixed(2));
                 rows.push([
                   idx===0?(c.customer_name||c.customer_email||""):"",
                   idx===0?(c.customer_email||""):"",
@@ -4351,9 +4391,9 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders,
                   item.barcode||"",
                   item.qty,
                   cost,
-                  isConsign?"":Number(item.price)||0,
-                  isConsign?"":Number((item.price*item.qty).toFixed(2)),
-                  idx===0?(isConsign?"":Number((c.subtotal||0).toFixed(2))):"",
+                  unitPrice,
+                  lineTotal,
+                  idx===0?Number((c.subtotal||0).toFixed(2)):"",
                   idx===0?(c.updated_at?new Date(c.updated_at).toLocaleString("en-JM",{timeZone:"America/Jamaica"}):""):"",
                 ]);
               });
@@ -5742,15 +5782,20 @@ function OrderSuccessModal({ order, settings, customers, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── INVOICE VIEW MODAL ───────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function InvoiceViewModal({ order, settings, customers, onClose }) {
+function InvoiceViewModal({ order, settings, customers, products, onClose }) {
   const customer=customers.find(c=>c.id===order.customer_id);
   const isConsignment = customer?.customer_type==="consignment" || order.type==="consignment";
+  const [hideCost, setHideCost] = useState(true); // default hidden - admin can reveal
+
   const exportCSV=()=>{
     const rows=[
       ["Invoice",order.id],["Customer",order.customer_name],["Date",order.date],["Status",order.status],["Payment",order.payment_method||"—"],[""],
-      ["Product","Barcode","Qty","Unit Price","Total"],
-      ...(order.items||[]).map(i=>[i.name,i.barcode||"—",i.qty,i.unit_price,i.qty*i.unit_price]),
-      [""],["Subtotal","",""," ",order.subtotal],[`GCT (${order.tax_rate}%)`,""," ","",order.tax_amount],["Total","","","",order.total]
+      ["Product","Barcode","Qty","Unit Cost","Unit Price","Line Total"],
+      ...(order.items||[]).map(i=>{
+        const prod=(products||[]).find(p=>p.id===i.product_id);
+        return [i.name,i.barcode||"—",i.qty,Number(prod?.cost||0),Number(i.unit_price||0),Number(((i.unit_price||0)*i.qty).toFixed(2))];
+      }),
+      [""],["Subtotal","","","","",order.subtotal||0],[`GCT (${order.tax_rate||0}%)`,"","","","",order.tax_amount||0],["Total","","","","",order.total||0]
     ];
     downloadCSV(rows,`${order.id}.csv`);
   };
@@ -5759,9 +5804,13 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
     <div className="overlay"><div className="modal modal-lg">
       <div className="modal-head">
         <h2>Invoice {order.id}</h2>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ Excel/CSV</button>}
-          {!isConsignment&&<button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings)}>🖨 PDF/Print</button>}
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,color:"var(--text2)",cursor:"pointer"}}>
+            <input type="checkbox" checked={hideCost} onChange={e=>setHideCost(e.target.checked)}/>
+            Hide cost
+          </label>
+          <button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ CSV</button>
+          <button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings,isConsignment)}>🖨 PDF/Print</button>
           <button className="xbtn" onClick={onClose}>✕</button>
         </div>
       </div>
@@ -5783,12 +5832,13 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
 
         <div className="tbl-wrap" style={{marginBottom:16}}>
           <table>
-            <thead><tr><th>Barcode</th><th>Product</th><th>Qty</th>{!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}</tr></thead>
+            <thead><tr><th>Barcode</th><th>Product</th><th>Qty</th>{!hideCost&&<th style={{textAlign:"right",color:"var(--text3)"}}>Unit Cost</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}</tr></thead>
             <tbody>{(order.items||[]).map((item,i)=>(
               <tr key={i}>
                 <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
                 <td style={{fontWeight:500}}>{item.name}</td>
                 <td>{item.qty}</td>
+                {!hideCost&&<td style={{textAlign:"right",fontSize:12,color:"var(--text3)"}}>{fmt((products||[]).find(p=>p.id===item.product_id)?.cost||0)}</td>}
                 {!isConsignment&&<td style={{textAlign:"right"}}>{fmt(item.unit_price)}</td>}
                 {!isConsignment&&<td style={{textAlign:"right",fontWeight:600}}>{fmt(item.qty*item.unit_price)}</td>}
               </tr>
@@ -5796,8 +5846,9 @@ function InvoiceViewModal({ order, settings, customers, onClose }) {
             {(order.items||[]).length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
               <td colSpan={2}>TOTALS</td>
               <td style={{color:"var(--accent)"}}>{(order.items||[]).reduce((s,i)=>s+i.qty,0)}</td>
+              {!hideCost&&<td></td>}
               {!isConsignment&&<td></td>}
-              {!isConsignment&&<td style={{textAlign:"right",color:"var(--accent)"}}>{fmt((order.items||[]).reduce((s,i)=>s+i.qty*i.unit_price,0))}</td>}
+              {!isConsignment&&<td style={{textAlign:"right",color:"var(--accent)"}}>{fmt((order.items||[]).reduce((s,i)=>s+i.qty*(i.unit_price||0),0))}</td>}
             </tr>}
             </tbody>
           </table>
