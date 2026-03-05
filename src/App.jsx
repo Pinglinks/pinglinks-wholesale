@@ -323,7 +323,7 @@ const genId = (prefix, arr) => `${prefix}-${new Date().getFullYear()}-${String((
 function applyDiscount(price, pct) { return Math.round(price * (1 - (pct||0)/100)); }
 
 function downloadCSV(rows, filename) {
-  const csv = rows.map(r => r.map(c => `"${String(c||"").replace(/"/g,'""`)`.join(",")).join("\n");
+  const csv = rows.map(r => r.map(c => String(c||"").replace(/"/g, '""')).map(c => `"${c}"`).join(",")).join("\n");
   // \uFEFF = UTF-8 BOM so Excel reads currency symbols correctly
   const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8;" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
