@@ -323,8 +323,9 @@ const genId = (prefix, arr) => `${prefix}-${new Date().getFullYear()}-${String((
 function applyDiscount(price, pct) { return Math.round(price * (1 - (pct||0)/100)); }
 
 function downloadCSV(rows, filename) {
-  const csv = rows.map(r => r.map(c => `"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type:"text/csv" });
+  const csv = rows.map(r => r.map(c => `"${String(c||"").replace(/"/g,'""`)`.join(",")).join("\n");
+  // \uFEFF = UTF-8 BOM so Excel reads currency symbols correctly
+  const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8;" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
 }
 
@@ -4334,22 +4335,26 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders,
         <div style={{display:"flex",gap:8,marginLeft:"auto"}}>
           <button className="btn btn-secondary btn-sm" onClick={()=>{
             const active = enriched.filter(c=>c.status==="active"&&c.items.length>0);
-            const rows = [["Customer","Email","Type","Product","Barcode","SKU","Qty","Unit Price","Line Total","Cart Subtotal","Last Updated"]];
+            const rows = [["Customer","Email","Type","Product","Barcode","Qty","Cost","Unit Price","Line Total","Cart Subtotal","Last Updated"]];
             active.forEach(c=>{
-              if(c.items.length===0){ rows.push([c.customer_name||c.customer_email,"","","(empty cart)","","","","","",c.subtotal||0,c.updated_at||""]); return; }
+              if(c.items.length===0){ rows.push([c.customer_name||c.customer_email,"","","(empty cart)","","","","","",0,c.updated_at||""]); return; }
               c.items.forEach((item,idx)=>{
+                const isConsign = c.customer_type==="consignment";
+                // Look up cost from products list if available
+                const prod = (typeof products!=="undefined"?products:[]).find(p=>p.id===item.pid);
+                const cost = prod?.cost||item.cost||"";
                 rows.push([
                   idx===0?(c.customer_name||c.customer_email||""):"",
                   idx===0?(c.customer_email||""):"",
                   idx===0?(c.customer_type||"standard"):"",
                   item.name||"",
                   item.barcode||"",
-                  item.sku||"",
                   item.qty,
-                  c.customer_type==="consignment"?"—":item.price,
-                  c.customer_type==="consignment"?"—":item.price*item.qty,
-                  idx===0?(c.customer_type==="consignment"?"—":c.subtotal||0):"",
-                  idx===0?(c.updated_at||""):"",
+                  cost,
+                  isConsign?"":Number(item.price)||0,
+                  isConsign?"":Number((item.price*item.qty).toFixed(2)),
+                  idx===0?(isConsign?"":Number((c.subtotal||0).toFixed(2))):"",
+                  idx===0?(c.updated_at?new Date(c.updated_at).toLocaleString("en-JM",{timeZone:"America/Jamaica"}):""):"",
                 ]);
               });
             });
