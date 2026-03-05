@@ -753,7 +753,7 @@ export default function App() {
     ]},
     {section:"System", items:[
       {id:"settings",icon:"⚙️",label:"Settings"},
-      {id:"stores",icon:"🏬",label:"Store Locations"},
+
       {id:"staff",icon:"🔑",label:"Staff Accounts"},
       {id:"account",icon:"👤",label:"My Account"},
     ]},
@@ -825,7 +825,7 @@ export default function App() {
             {page==="categories" && <CategoriesPage products={products} extraCategories={settings.extra_categories?JSON.parse(settings.extra_categories):[]} setExtraCategories={(v)=>setSettings(p=>({...p,extra_categories:JSON.stringify(v)}))} showToast={showToast}/>}
             {page==="suppliers" && <SuppliersPage suppliers={suppliers} setSuppliers={setSuppliers} products={products} showToast={showToast}/>}
             {page==="stocktake" && <StockTakePage products={products} setProducts={setProducts} stockTakes={stockTakes} setStockTakes={setStockTakes} showToast={showToast}/>}
-            {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} settings={settings} showToast={showToast}/>}
+            {page==="transfers" && <TransfersPage products={products} setProducts={setProducts} transfers={transfers} setTransfers={setTransfers} stores={stores} setStores={setStores} settings={settings} showToast={showToast}/>}
             {page==="purchaseorders" && <PurchaseOrdersPage purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} products={products} setProducts={setProducts} suppliers={suppliers} setSuppliers={setSuppliers} settings={settings} showToast={showToast}/>}
             {page==="incoming" && <IncomingStockPage purchaseOrders={purchaseOrders} products={products}/>}
             {page==="orders" && <OrdersPage orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} customers={customers} settings={settings} showToast={showToast} products={products} setProducts={setProducts}/>}
@@ -834,11 +834,11 @@ export default function App() {
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user} cart={cart}/>}
             {page==="hot-sellers" && <HotSellersPage products={products} user={user} addToCart={addToCart} cart={cart}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} salesReps={salesReps} showToast={showToast}/>}
-            {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders}/>}
+            {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders} showToast={showToast}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
             {page==="activitylog" && <ActivityLogPage activityLog={activityLog} setActivityLog={setActivityLog}/>}
             {page==="settings" && <SettingsPage settings={settings} setSettings={setSettings} showToast={showToast}/>}
-            {page==="stores" && <StoresPage stores={stores} setStores={setStores} showToast={showToast}/>}
+
             {page==="salesreps" && <SalesRepsPage salesReps={salesReps} setSalesReps={setSalesReps} showToast={showToast}/>}
             {page==="staff" && <StaffPage showToast={showToast}/>}
             {page==="catalog" && <CatalogPage products={products} user={user} addToCart={addToCart} cart={cart} settings={settings}/>}
@@ -2082,12 +2082,33 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── TRANSFERS PAGE ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function TransfersPage({ products, setProducts, transfers, setTransfers, stores, settings, showToast }) {
+function TransfersPage({ products, setProducts, transfers, setTransfers, stores, setStores, settings, showToast }) {
   // Restore any existing draft from the transfers list (survives navigation)
   const [draft, setDraft] = useState(() => {
     const existing = transfers.find(t=>t.status==="draft");
     return existing || null;
   });
+  const [storeForm, setStoreForm] = useState({show:false,editing:null,name:"",address:"",phone:"",manager:""});
+  const saveStore = async () => {
+    const {name,address,phone,manager,editing} = storeForm;
+    if(!name.trim()){return;}
+    if(editing){
+      await supabase.from("stores").update({name,address,phone,manager}).eq("id",editing.id);
+      setStores(p=>p.map(s=>s.id===editing.id?{...s,name,address,phone,manager}:s));
+      showToast("Store updated");
+    } else {
+      const {data} = await supabase.from("stores").insert({name,address,phone,manager}).select().single();
+      if(data) setStores(p=>[...p,data]);
+      showToast("Store added");
+    }
+    setStoreForm({show:false,editing:null,name:"",address:"",phone:"",manager:""});
+  };
+  const deleteStore = async (id) => {
+    if(!window.confirm("Delete this store? This cannot be undone.")) return;
+    await supabase.from("stores").delete().eq("id",id);
+    setStores(p=>p.filter(s=>s.id!==id));
+    showToast("Store deleted");
+  };
   const [showNewForm, setShowNewForm] = useState(false);
   const [newStore, setNewStore] = useState(stores[0]?.id||"");
   const [newPO, setNewPO] = useState("");
@@ -2223,9 +2244,13 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
             Active Draft {draft?<span className="badge bb" style={{fontSize:9,marginLeft:4}}>1 open</span>:null}
           </button>
           <button className={`tab ${tab==="history"?"active":""}`} onClick={()=>setTab("history")}>Transfer History ({completedTransfers.length})</button>
+          <button className={`tab ${tab==="stores"?"active":""}`} onClick={()=>setTab("stores")}>🏬 Store Locations ({stores.length})</button>
         </div>
-        {!draft&&!showNewForm&&(
+        {tab!=="stores"&&!draft&&!showNewForm&&(
           <button className="btn btn-primary btn-sm" onClick={()=>setShowNewForm(true)}>+ New Transfer</button>
+        )}
+        {tab==="stores"&&(
+          <button className="btn btn-primary btn-sm" onClick={()=>setStoreForm({show:true,editing:null,name:"",address:"",phone:"",manager:""})}>+ Add Store</button>
         )}
       </div>
 
@@ -2396,6 +2421,58 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
           ))}
           {completedTransfers.length===0&&<div className="empty"><div className="ei">🏪</div><p>No completed transfers yet.</p></div>}
         </div>
+      )}
+
+      {/* ── Stores tab ── */}
+      {tab==="stores"&&(
+        <div className="card">
+          <div className="tbl-wrap">
+            <table>
+              <thead><tr>
+                <th>Store Name</th>
+                <th>Address</th>
+                <th>Phone</th>
+                <th>Manager</th>
+                <th>Actions</th>
+              </tr></thead>
+              <tbody>
+                {stores.length===0&&<tr><td colSpan={5} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No stores yet. Add your first store.</td></tr>}
+                {stores.map(s=>(
+                  <tr key={s.id}>
+                    <td style={{fontWeight:600}}>{s.name}</td>
+                    <td style={{fontSize:12,color:"var(--text2)"}}>{s.address||"—"}</td>
+                    <td style={{fontSize:12,color:"var(--text2)"}}>{s.phone||"—"}</td>
+                    <td style={{fontSize:12,color:"var(--text2)"}}>{s.manager||"—"}</td>
+                    <td><div className="tbl-actions">
+                      <button className="btn btn-secondary btn-xs" onClick={()=>setStoreForm({show:true,editing:s,name:s.name,address:s.address||"",phone:s.phone||"",manager:s.manager||""})}>Edit</button>
+                      <button className="btn btn-danger btn-xs" onClick={()=>deleteStore(s.id)}>Del</button>
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Store add/edit modal ── */}
+      {storeForm.show&&(
+        <div className="overlay"><div className="modal modal-sm">
+          <div className="modal-head">
+            <h2>{storeForm.editing?"Edit Store":"Add Store"}</h2>
+            <button className="xbtn" onClick={()=>setStoreForm(f=>({...f,show:false}))}>✕</button>
+          </div>
+          <div className="modal-body">
+            <div className="form-group"><label>Store Name *</label><input value={storeForm.name} onChange={e=>setStoreForm(f=>({...f,name:e.target.value}))}/></div>
+            <div className="form-group"><label>Address</label><input value={storeForm.address} onChange={e=>setStoreForm(f=>({...f,address:e.target.value}))}/></div>
+            <div className="form-group"><label>Phone</label><input value={storeForm.phone} onChange={e=>setStoreForm(f=>({...f,phone:e.target.value}))}/></div>
+            <div className="form-group"><label>Manager / Contact</label><input value={storeForm.manager} onChange={e=>setStoreForm(f=>({...f,manager:e.target.value}))}/></div>
+          </div>
+          <div className="modal-foot">
+            <button className="btn btn-secondary" onClick={()=>setStoreForm(f=>({...f,show:false}))}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveStore} disabled={!storeForm.name.trim()}>Save</button>
+          </div>
+        </div></div>
       )}
     </>
   );
@@ -4178,7 +4255,7 @@ function IncomingStockPage({ purchaseOrders, products }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── CUSTOMER CARTS PAGE ─────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders }) {
+function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders, showToast }) {
   const [filter, setFilter] = useState("active");
   const [selected, setSelected] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -4254,9 +4331,35 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders 
         {[["active","🟢 Active Carts"],["abandoned","⚠️ Abandoned"],["converted","✓ Converted"],["all","All"]].map(([v,l])=>(
           <button key={v} className={`btn btn-sm ${filter===v?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(v)}>{l}</button>
         ))}
-        <button className="btn btn-secondary btn-sm" onClick={refreshCarts} disabled={refreshing} style={{marginLeft:"auto"}}>
-          {refreshing?"⟳ Refreshing…":"⟳ Refresh"}
-        </button>
+        <div style={{display:"flex",gap:8,marginLeft:"auto"}}>
+          <button className="btn btn-secondary btn-sm" onClick={()=>{
+            const active = enriched.filter(c=>c.status==="active"&&c.items.length>0);
+            const rows = [["Customer","Email","Type","Product","Barcode","SKU","Qty","Unit Price","Line Total","Cart Subtotal","Last Updated"]];
+            active.forEach(c=>{
+              if(c.items.length===0){ rows.push([c.customer_name||c.customer_email,"","","(empty cart)","","","","","",c.subtotal||0,c.updated_at||""]); return; }
+              c.items.forEach((item,idx)=>{
+                rows.push([
+                  idx===0?(c.customer_name||c.customer_email||""):"",
+                  idx===0?(c.customer_email||""):"",
+                  idx===0?(c.customer_type||"standard"):"",
+                  item.name||"",
+                  item.barcode||"",
+                  item.sku||"",
+                  item.qty,
+                  c.customer_type==="consignment"?"—":item.price,
+                  c.customer_type==="consignment"?"—":item.price*item.qty,
+                  idx===0?(c.customer_type==="consignment"?"—":c.subtotal||0):"",
+                  idx===0?(c.updated_at||""):"",
+                ]);
+              });
+            });
+            downloadCSV(rows,`active_carts_${new Date().toISOString().slice(0,10)}.csv`);
+            showToast("Active carts exported");
+          }}>⬇ Export CSV</button>
+          <button className="btn btn-secondary btn-sm" onClick={refreshCarts} disabled={refreshing}>
+            {refreshing?"⟳ Refreshing…":"⟳ Refresh"}
+          </button>
+        </div>
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:selected?"1fr 380px":"1fr",gap:16}}>
@@ -5555,10 +5658,16 @@ function CartModal({ cart, updateQty, subtotal, tax, total, taxRate, user, onClo
               </div>
               <div className="qty-ctrl">
                 <button className="qbtn" onClick={()=>updateQty(item.pid,item.qty-1)}>−</button>
-                <span style={{fontSize:13,fontWeight:600,minWidth:24,textAlign:"center"}}>{item.qty}</span>
+                <input
+                  type="number" min={item.min||1}
+                  value={item.qty}
+                  onChange={e=>{ const v=parseInt(e.target.value); if(!isNaN(v)&&v>0) updateQty(item.pid,v); }}
+                  style={{width:48,textAlign:"center",fontWeight:600,fontSize:13,border:"1px solid var(--border)",borderRadius:6,padding:"2px 4px",background:"var(--bg2)"}}
+                />
                 <button className="qbtn" onClick={()=>updateQty(item.pid,item.qty+1)}>+</button>
               </div>
               {!isConsignment&&<div style={{minWidth:72,textAlign:"right",fontWeight:600,fontSize:13}}>{fmt(item.price*item.qty)}</div>}
+              <button title="Remove item" onClick={()=>updateQty(item.pid,0)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:"var(--danger)",padding:"0 4px",lineHeight:1,opacity:0.7}} onMouseOver={e=>e.target.style.opacity=1} onMouseOut={e=>e.target.style.opacity=0.7}>🗑</button>
             </div>
           ))}
           <div className="divider"/>
