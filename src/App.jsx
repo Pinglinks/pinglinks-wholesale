@@ -370,8 +370,8 @@ td{padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:13px}
   <div class="section"><h4>Bill To</h4><div style="font-weight:600">${customer?.company||order.customer_name}</div><div style="color:#4a5568">${customer?.tax_id?`TRN: ${customer.tax_id}`:""}</div></div>
   <div class="section" style="text-align:right"><h4>Payment</h4><div>Method: ${order.payment_method||"—"}</div><div>Status: ${order.status}</div>${order.type==="consignment"?`<div>Due: ${order.consignment_due||"—"}</div>`:""}</div>
 </div>
-<table><thead><tr><th>Barcode</th><th>Product</th><th>Qty</th>${!isConsignment?'<th style="text-align:right">Unit Price</th><th style="text-align:right">Total</th>':''}</tr></thead>
-<tbody>${(order.items||[]).map(i=>`<tr><td><code>${i.barcode||"—"}</code></td><td>${i.name}</td><td>${i.qty}</td>${!isConsignment?`<td style="text-align:right">${fmt(i.unit_price)}</td><td style="text-align:right">${fmt(i.qty*i.unit_price)}</td>`:''}</tr>`).join("")}</tbody></table>
+<table><thead><tr><th>Barcode</th><th>Brand</th><th>Product</th><th>Qty</th>${!isConsignment?'<th style="text-align:right">Unit Price</th><th style="text-align:right">Total</th>':''}</tr></thead>
+<tbody>${(order.items||[]).map(i=>`<tr><td><code>${i.barcode||"—"}</code></td><td>${i.brand||"—"}</td><td>${i.name}</td><td>${i.qty}</td>${!isConsignment?`<td style="text-align:right">${fmt(i.unit_price)}</td><td style="text-align:right">${fmt(i.qty*i.unit_price)}</td>`:''}</tr>`).join("")}</tbody></table>
 ${!isConsignment?`<table class="totals-table">
   <tr><td>Subtotal</td><td style="text-align:right">${fmt(order.subtotal)}</td></tr>
   <tr><td>${taxLabel}</td><td style="text-align:right">${fmt(order.tax_amount)}</td></tr>
@@ -627,9 +627,25 @@ export default function App() {
     setUser(u);
     setPage(u.role === "admin" ? "dashboard" : "catalog");
     await loadData(u);
+    try { await supabase.from("activity_log").insert({
+      action: "user_login",
+      details: `${u.name||u.email} signed in (${u.role||"customer"})`,
+      entity_type: "user", entity_id: String(u.id||""),
+      user_name: u.name||u.email||"Unknown",
+      timestamp: new Date().toISOString()
+    }); } catch(e) {}
   };
 
   const logout = async () => {
+    if (user) {
+      try { await supabase.from("activity_log").insert({
+        action: "user_logout",
+        details: `${user.name||user.email} signed out`,
+        entity_type: "user", entity_id: String(user.id||""),
+        user_name: user.name||user.email||"Unknown",
+        timestamp: new Date().toISOString()
+      }); } catch(e) {}
+    }
     await supabase.auth.signOut();
     setUser(null); setCart([]);
   };
@@ -743,6 +759,7 @@ export default function App() {
       {id:"invoices",icon:"🧾",label:"Invoices"},
       {id:"carts",icon:"🛒",label:"Customer Carts"},
       {id:"clearance",icon:"🔥",label:"Clearance"},
+      {id:"hot-sellers-admin",icon:"⭐",label:"Hot Sellers"},
     ]},
     {section:"Accounts", items:[
       {id:"customers",icon:"👥",label:"Customers"},
@@ -771,7 +788,7 @@ export default function App() {
     {section:"Account", items:[{id:"account",icon:"👤",label:"Account"}]},
   ];
 
-  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Orders",backorders:"Back Orders",invoices:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders","hot-sellers":"Hot Sellers",account:"My Account",salesreps:"Sales Reps",staff:"Staff Accounts" };
+  const titles = { dashboard:"Dashboard",products:"Products",categories:"Categories",suppliers:"Suppliers",stocktake:"Stock Take",transfers:"Store Transfers",orders:"Orders",backorders:"Back Orders",invoices:"Invoices",clearance:"Clearance",customers:"Customers",analytics:"Analytics & Reports",activitylog:"Activity Log",settings:"Settings",stores:"Store Locations",catalog:"Wholesale Catalog","my-orders":"My Orders","hot-sellers":"Hot Sellers","hot-sellers-admin":"Hot Sellers",account:"My Account",salesreps:"Sales Reps",staff:"Staff Accounts" };
 
   return (
     <>
@@ -834,6 +851,7 @@ export default function App() {
             {page==="invoices" && <InvoicesPage orders={orders} setOrders={setOrders} customers={customers} settings={settings} showToast={showToast} setModal={setModal} products={products} setProducts={setProducts}/>}
             {page==="clearance" && <ClearancePage products={products} isAdmin={isAdmin} addToCart={addToCart} user={user} cart={cart}/>}
             {page==="hot-sellers" && <HotSellersPage products={products} user={user} addToCart={addToCart} cart={cart}/>}
+            {page==="hot-sellers-admin" && <AdminHotSellersPage products={products} setProducts={setProducts} settings={settings} showToast={showToast}/>}
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} salesReps={salesReps} showToast={showToast}/>}
             {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders} products={products} showToast={showToast}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
@@ -1002,7 +1020,7 @@ function DashboardPage({ products, orders, customers, transfers, settings, setPa
   const outOfStock = activeProducts.filter(p=>p.stock===0).length;
   const pendingApprovals = customers.filter(c=>!c.approved).length;
   const revenueThisMonth = orders.filter(o=>o.date?.startsWith(today().slice(0,7))&&o.type!=="consignment").reduce((s,o)=>s+o.total,0);
-  const newArrivals = activeProducts.filter(p=>p.is_new_arrival).slice(0,5);
+  const newArrivals = activeProducts.filter(p=>isNewArrival(p)&&p.stock>0).slice(0,5);
   const lowStockItems = activeProducts.filter(p=>p.stock>0&&p.stock<=p.low_stock_threshold).slice(0,5);
 
   return (
@@ -1298,7 +1316,6 @@ function ProductsPage({ products, setProducts, suppliers, setSuppliers, orders, 
           <option value="all">All</option>
         </select>
         <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
-        <button className="btn btn-secondary btn-sm" onClick={downloadTemplate}>⬇ Template</button>
         <button className="btn btn-secondary btn-sm" onClick={()=>setShowImport(true)}>📥 Import</button>
         <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setShowModal(true);}}>+ Add Product</button>
       </div>
@@ -1635,9 +1652,23 @@ function ProductModal({ product, categories, onSave, onClose }) {
                 <div className="form-group"><label>Brand</label><input value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
               </div>
               <div className="form-group"><label>Category</label>
-                  <select value={f.category} onChange={e=>s("category",e.target.value)}>
+                <div style={{display:"flex",gap:6}}>
+                  <select value={f.category} onChange={e=>{ if(e.target.value==="__new__"){return;} s("category",e.target.value); }} style={{flex:1}}>
                     {categories.map(c=><option key={c}>{c}</option>)}
+                    <option value="__new__">+ New category…</option>
                   </select>
+                </div>
+                {(()=>{
+                  const [showNew,setShowNew]=React.useState(false);
+                  const [newCatVal,setNewCatVal]=React.useState("");
+                  return showNew ? (
+                    <div style={{display:"flex",gap:6,marginTop:4}}>
+                      <input value={newCatVal} onChange={e=>setNewCatVal(e.target.value)} placeholder="New category name…" style={{flex:1}} autoFocus onKeyDown={e=>{if(e.key==="Enter"&&newCatVal.trim()){s("category",newCatVal.trim());setShowNew(false);setNewCatVal("");}if(e.key==="Escape")setShowNew(false);}}/>
+                      <button className="btn btn-primary btn-xs" onClick={()=>{if(newCatVal.trim()){s("category",newCatVal.trim());setShowNew(false);setNewCatVal("");}}} >Add</button>
+                      <button className="btn btn-ghost btn-xs" onClick={()=>setShowNew(false)}>✕</button>
+                    </div>
+                  ) : <button className="btn btn-ghost btn-xs" style={{marginTop:4,fontSize:11}} onClick={()=>setShowNew(true)}>+ New category</button>;
+                })()}
               </div>
             </div>
           </div>
@@ -1711,7 +1742,7 @@ function ImportModal({ onImport, onDownloadTemplate, onClose }) {
             <input ref={fileRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
           </div>
           {text&&<div className="alert alert-ok">✅ File loaded — {text.trim().split("\n").length-1} rows ready to import</div>}
-          <button className="btn btn-ghost btn-sm" onClick={onDownloadTemplate}>⬇ Download Template First</button>
+          <div style={{fontSize:11,color:"var(--text3)"}}>Use the PO Import template (on Purchase Orders page) to add new products.</div>
         </div>
         <div className="modal-foot">
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -1906,12 +1937,33 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
   const [counts,setCounts]=useState({});
   const [notes,setNotes]=useState("");
   const [search,setSearch]=useState("");
+  const [filterCat,setFilterCat]=useState("All");
+  const [filterBrand,setFilterBrand]=useState("All");
+  const [filterAvailable,setFilterAvailable]=useState(false);
+  const [sortKey,setSortKey]=useState("name");
 
   const activeProducts = products.filter(p=>p.active);
-  const filtered = activeProducts.filter(p=>!search||p.name?.toLowerCase().includes(search.toLowerCase())||p.sku?.toLowerCase().includes(search.toLowerCase()));
+  const allCats=["All",...[...new Set(activeProducts.map(p=>p.category).filter(Boolean))].sort()];
+  const allBrands=["All",...[...new Set(activeProducts.map(p=>p.brand).filter(Boolean))].sort()];
+  const filtered = activeProducts.filter(p=>{
+    const q=search.toLowerCase();
+    if(q&&!p.name?.toLowerCase().includes(q)&&!p.barcode?.includes(q)&&!p.brand?.toLowerCase().includes(q)) return false;
+    if(filterCat!=="All"&&p.category!==filterCat) return false;
+    if(filterBrand!=="All"&&p.brand!==filterBrand) return false;
+    if(filterAvailable&&p.stock<1) return false;
+    return true;
+  }).sort((a,b)=>{
+    if(sortKey==="name") return a.name.localeCompare(b.name);
+    if(sortKey==="stock_asc") return a.stock-b.stock;
+    if(sortKey==="stock_desc") return b.stock-a.stock;
+    if(sortKey==="brand") return (a.brand||"").localeCompare(b.brand||"");
+    if(sortKey==="category") return (a.category||"").localeCompare(b.category||"");
+    if(sortKey==="low_stock") return (a.stock-a.low_stock_threshold)-(b.stock-b.low_stock_threshold);
+    return 0;
+  });
 
   const downloadCountSheet = () => {
-    const rows=[["SKU","Barcode","Brand","Name","Category","System Count","Physical Count","Variance"],...activeProducts.map(p=>[p.sku,p.barcode||"",p.brand||"",p.name,p.category,p.stock,"",""])];
+    const rows=[["Barcode","Brand","Name","Category","System Count","Physical Count","Variance"],...activeProducts.map(p=>[p.barcode||"",p.brand||"",p.name,p.category,p.stock,"",""])];
     downloadCSV(rows,`stock_count_${today()}.csv`);
     showToast("Count sheet downloaded");
   };
@@ -1925,16 +1977,16 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
     if(!items.length){showToast("No counts entered","err");return;}
     const stId=genId("ST",stockTakes);
     const stRow = {id:stId, date:today(), status:"completed", notes};
-    // Save stock take to Supabase — ignore RLS/auth errors and continue
-    const {error:stErr} = await supabase.from("stock_takes").insert(stRow);
-    if(stErr){
-      const msg = stErr?.message||stErr?.hint||stErr?.code||"";
-      // If it's an auth/RLS error (long JWT string or policy error), just warn but continue
-      const isAuthErr = msg.length > 100 || msg.includes("policy") || msg.includes("JWT") || stErr?.code==="42501";
-      if(!isAuthErr){ showToast("Failed to save stock take record","err"); return; }
-      console.warn("Stock take RLS warning (stock still updated):", stErr?.code||stErr?.hint);
-    } else {
-      try { await supabase.from("stock_take_items").insert(items.map(i=>({...i,stock_take_id:stId}))); } catch(e) {}
+    // Save stock take to Supabase — always continue even if table/RLS doesn't exist
+    try {
+      const {error:stErr} = await supabase.from("stock_takes").insert(stRow);
+      if(!stErr){
+        try { await supabase.from("stock_take_items").insert(items.map(i=>({...i,stock_take_id:stId}))); } catch(e) {}
+      } else {
+        console.warn("Stock take insert skipped:", stErr?.code, stErr?.message?.slice(0,80));
+      }
+    } catch(e) {
+      console.warn("Stock take DB error (stock still updated):", e?.message);
     }
     // Always update local state regardless
     setStockTakes(p=>[{...stRow, items},...p]);
@@ -1969,14 +2021,32 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
 
       {tab==="new"&&(
         <>
-          <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
-            <div className="search-wrap" style={{flex:1}}>
+          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
+            <div className="search-wrap" style={{flex:2,minWidth:180}}>
               <span className="search-icon">🔍</span>
-              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search products…"/>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, barcode, brand…"/>
             </div>
-            <button className="btn btn-secondary btn-sm" onClick={downloadCountSheet}>⬇ Download Count Sheet</button>
-{adjCount>0&&<span className="badge bw">{adjCount} items counted · Unit variance: {totalVariance>0?"+":""}{totalVariance} · Value: {fmt(Math.abs(Object.entries(counts).reduce((s,[id,v])=>{if(v==="")return s;const p=products.find(x=>x.id===id);return s+(+v-(p?.stock||0))*(p?.cost||0);},0)))}</span>}
+            <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{padding:"6px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:13}}>
+              {allCats.map(c=><option key={c}>{c}</option>)}
+            </select>
+            <select value={filterBrand} onChange={e=>setFilterBrand(e.target.value)} style={{padding:"6px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:13}}>
+              {allBrands.map(b=><option key={b}>{b}</option>)}
+            </select>
+            <select value={sortKey} onChange={e=>setSortKey(e.target.value)} style={{padding:"6px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:13}}>
+              <option value="name">Sort: Name A–Z</option>
+              <option value="brand">Sort: Brand A–Z</option>
+              <option value="category">Sort: Category A–Z</option>
+              <option value="stock_asc">Sort: Stock Low→High</option>
+              <option value="stock_desc">Sort: Stock High→Low</option>
+              <option value="low_stock">Sort: Closest to Low Stock</option>
+            </select>
+            <label style={{display:"flex",alignItems:"center",gap:5,fontSize:13,cursor:"pointer",whiteSpace:"nowrap"}}>
+              <input type="checkbox" checked={filterAvailable} onChange={e=>setFilterAvailable(e.target.checked)}/>
+              In stock only
+            </label>
+            <button className="btn btn-secondary btn-sm" onClick={downloadCountSheet}>⬇ Count Sheet</button>
           </div>
+          {adjCount>0&&<div style={{marginBottom:10}}><span className="badge bw">{adjCount} items counted · Unit variance: {totalVariance>0?"+":""}{totalVariance} · Value: {fmt(Math.abs(Object.entries(counts).reduce((s,[id,v])=>{if(v==="")return s;const p=products.find(x=>x.id===id);return s+(+v-(p?.stock||0))*(p?.cost||0);},0)))}</span></div>}
 
           <div className="card" style={{marginBottom:16}}>
             <div className="tbl-wrap">
@@ -2087,7 +2157,21 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
   // Restore any existing draft from the transfers list (survives navigation)
   const [draft, setDraft] = useState(() => {
     const existing = transfers.find(t=>t.status==="draft");
-    return existing || null;
+    if (!existing) return null;
+    // Normalize items: DB returns product_id but local state uses pid
+    const normalized = {
+      ...existing,
+      items: (existing.items||[]).map(i => ({
+        pid: i.pid || i.product_id,
+        name: i.name,
+        sku: i.sku||"",
+        barcode: i.barcode||"",
+        qty: i.qty||1,
+        cost: i.cost||0,
+        maxQty: products.find(p=>p.id===(i.pid||i.product_id))?.stock ?? 999,
+      }))
+    };
+    return normalized;
   });
   const [storeForm, setStoreForm] = useState({show:false,editing:null,name:"",address:"",phone:"",manager:""});
   const saveStore = async () => {
@@ -2228,8 +2312,8 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
   const downloadTransfer = (tr) => {
     const rows=[
       ["Transfer ID",tr.id],["Store",tr.store_name],["PO #",tr.po_number||"—"],["Date",tr.date],["Total Cost",tr.total_cost],["Notes",tr.notes||""],[""],
-      ["SKU","Barcode","Product","Qty","Unit Cost","Total Cost"],
-      ...(tr.items||[]).map(i=>[i.sku,i.barcode||"",i.name,i.qty,i.cost,i.qty*i.cost])
+      ["Barcode","Brand","Product","Qty","Unit Cost","Total Cost"],
+      ...(tr.items||[]).map(i=>{ const p=undefined; return [i.barcode||"",i.brand||"",i.name,i.qty,i.cost,i.qty*i.cost]; })
     ];
     downloadCSV(rows,`${tr.id}.csv`);
     showToast("Transfer sheet downloaded");
@@ -2330,10 +2414,10 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
                   {draft.items.length===0
                     ?<div style={{padding:20,textAlign:"center",color:"var(--text3)"}}>Search and add products from the right →</div>
                     :<div className="tbl-wrap">
-                      <table><thead><tr><th>SKU</th><th>Product</th><th>Cost</th><th>Qty</th><th>Total</th><th></th></tr></thead>
+                      <table><thead><tr><th>Barcode</th><th>Product</th><th>Cost</th><th>Qty</th><th>Total</th><th></th></tr></thead>
                         <tbody>{draft.items.map(i=>(
                           <tr key={i.pid}>
-                            <td><code style={{fontSize:10}}>{i.sku||"—"}</code></td>
+                            <td><code style={{fontSize:10}}>{i.barcode||"—"}</code></td>
                             <td style={{fontSize:12}}>{i.name.slice(0,28)}{i.name.length>28?"…":""}</td>
                             <td style={{fontSize:12}}>{fmt(i.cost)}</td>
                             <td><input type="number" min={1} max={i.maxQty} value={i.qty} onChange={e=>updateItem(i.pid,e.target.value)} style={{width:60,textAlign:"center"}}/></td>
@@ -2405,12 +2489,12 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
                 </div>
               </div>
               <div className="tbl-wrap">
-                <table><thead><tr><th>SKU</th><th>Barcode</th><th>Product</th><th>Qty</th><th>Unit Cost</th><th>Total</th></tr></thead>
+                <table><thead><tr><th>Barcode</th><th>Product</th><th>Qty</th><th>Unit Cost</th><th>Total</th></tr></thead>
                   <tbody>{(tr.items||[]).map((item,i)=>(
-                    <tr key={i}><td><code style={{fontSize:10}}>{item.sku}</code></td><td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td><td style={{fontSize:12}}>{item.name}</td><td>{item.qty}</td><td>{fmt(item.cost)}</td><td style={{fontWeight:600}}>{fmt(item.qty*item.cost)}</td></tr>
+                    <tr key={i}><td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td><td style={{fontSize:12}}>{item.name}</td><td>{item.qty}</td><td>{fmt(item.cost)}</td><td style={{fontWeight:600}}>{fmt(item.qty*item.cost)}</td></tr>
                   ))}
                   {(tr.items||[]).length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
-                    <td colSpan={3}>TOTALS</td>
+                    <td colSpan={2}>TOTALS</td>
                     <td style={{color:"var(--accent)"}}>{(tr.items||[]).reduce((s,i)=>s+i.qty,0)}</td>
                     <td></td>
                     <td style={{color:"var(--accent)"}}>{fmt((tr.items||[]).reduce((s,i)=>s+i.qty*i.cost,0))}</td>
@@ -2661,6 +2745,7 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
                 <td><code>{o.id}</code></td>
                 <td style={{fontWeight:500}}>{o.customer_name}</td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
+                <td style={{fontSize:11,color:"var(--text3)"}}>{o.created_at?new Date(o.created_at).toLocaleString("en-JM",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"—"}</td>
                 <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
                 <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
                 <td style={{fontWeight:600,color:"var(--accent)"}}>
@@ -2704,7 +2789,7 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
 // ─── SHIP ORDER MODAL ─────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, products, setProducts, settings, showToast, onClose, isBackorder=false, backorderRecord=null }) {
-  // Build line items - for backorders show backordered qty, for orders show full qty
+  // Build line items - for backorders show remaining qty; for orders subtract already-backordered
   const lineItems = isBackorder
     ? (backorderRecord ? [{
         product_id: backorderRecord.product_id,
@@ -2713,7 +2798,14 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
         unit_price: backorderRecord.unit_price,
         barcode: backorderRecord.barcode || "",
       }] : [])
-    : (order?.items || []);
+    : (order?.items || []).map(item => {
+        // Sum qty already shipped (open backorders for this product on this order)
+        const alreadyBackordered = (backorders||[])
+          .filter(b => b.order_id === order.id && b.product_id === item.product_id && b.status === "open")
+          .reduce((s,b) => s + (b.qty_remaining||0), 0);
+        const remaining = Math.max(0, item.qty - alreadyBackordered);
+        return { ...item, qty: remaining, qty_original: item.qty };
+      }).filter(item => item.qty > 0);
 
   const [shipQtys, setShipQtys] = useState(() => {
     const init = {};
@@ -2727,12 +2819,12 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
     const rows = [
       ["Order", order.id], ["Customer", order.customer_name], ["Date", order.date],
       ["Type", order.type||"standard"], ["Payment", order.payment_method||"—"], [""],
-      ["Product","Barcode","Qty Ordered","Ship Qty","Backorder","Unit Cost","Unit Price","Line Total"],
+      ["Product","Brand","Barcode","Qty Ordered","Ship Qty","Backorder","Unit Cost","Unit Price","Line Total"],
       ...lineItems.map(item => {
         const prod = (typeof products!=="undefined"?products:[]).find(p=>p.id===item.product_id);
         const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id])||0, item.qty));
         return [
-          item.name, item.barcode||"", item.qty, toShip, item.qty-toShip,
+          item.name, prod?.brand||"", item.barcode||"", item.qty, toShip, item.qty-toShip,
           Number(prod?.cost||0), Number(item.unit_price||0),
           Number(((item.unit_price||0)*toShip).toFixed(2))
         ];
@@ -2799,55 +2891,59 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
         setBackorders(prev => prev.map(b => b.id === backorderRecord.id ? {...b, status:"fulfilled", qty_shipped: backorderRecord.qty_ordered} : b));
       }
 
-      // Check if all backorders for this order are now fulfilled
-      const allBackorders = await supabase.from("backorders").select("*").eq("order_id", order.id).eq("status","open");
-      const remainingOpen = (allBackorders.data || []).filter(b => !isBackorder || b.id !== backorderRecord?.id);
-
+      // Check if all backorders for this order are now fulfilled (none remaining open)
+      const allBackordersRes = await supabase.from("backorders").select("*").eq("order_id", order.id).eq("status","open");
+      const remainingOpen = (allBackordersRes.data || []).filter(b => !isBackorder || b.id !== backorderRecord?.id);
       const fullyComplete = newBackorders.length === 0 && remainingOpen.length === 0;
 
-      let newOrderStatus;
-      if (fullyComplete) {
-        newOrderStatus = "invoiced";
-      } else if (shippedItems.length > 0) {
-        newOrderStatus = "partial_shipped";
-      } else {
-        newOrderStatus = order.status;
-      }
-
-      await supabase.from("orders").update({ status: newOrderStatus }).eq("id", order.id);
-      setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: newOrderStatus} : o));
-
-      if (isBackorder && backorderRecord && shippedItems.length > 0) {
-        // Create a NEW invoice for the backorder shipment instead of modifying the original
-        const newInvId = order.id + "-B" + Date.now().toString().slice(-4);
-        const customer = order.customer_name;
+      // Always create an invoice for whatever was shipped (partial or full)
+      if (shippedItems.length > 0) {
+        const suffix = isBackorder ? "-B" + Date.now().toString().slice(-4) : newBackorders.length > 0 ? "-P" + Date.now().toString().slice(-4) : "";
+        const invId = isBackorder || newBackorders.length > 0 ? order.id + suffix : order.id;
         const invSubtotal = shippedItems.reduce((s,i)=>s+(i.unit_price||0)*i.qty_shipped,0);
         const taxRate = order.tax_rate || 0;
         const invTax = Math.round(invSubtotal * taxRate / 100);
         const invTotal = invSubtotal + invTax;
         const invItems = shippedItems.map(i=>({product_id:i.product_id,name:i.name,qty:i.qty_shipped,unit_price:i.unit_price||0,barcode:i.barcode||""}));
+        const noteLabel = isBackorder ? `Backorder shipment from ${order.id}` : newBackorders.length > 0 ? `Partial shipment — ${order.id}` : "";
         const newInv = {
-          id: newInvId, customer_id: order.customer_id, customer_name: customer,
-          date: today(), status: "invoiced", type: order.type||"standard",
-          payment_method: order.payment_method||"", tax_rate: taxRate,
-          subtotal: invSubtotal, tax_amount: invTax, total: invTotal,
-          notes: `Backorder shipment from ${order.id}`, items: invItems,
+          id: invId,
+          customer_id: order.customer_id,
+          customer_name: order.customer_name,
+          date: today(),
+          status: "invoiced",
+          type: order.type||"standard",
+          payment_method: order.payment_method||"",
+          tax_rate: taxRate,
+          subtotal: invSubtotal,
+          tax_amount: invTax,
+          total: invTotal,
+          notes: noteLabel,
+          items: invItems,
           created_at: new Date().toISOString()
         };
         const {data:savedInv} = await supabase.from("orders").insert({...newInv,items:undefined}).select().single();
-        if(savedInv){
-          await supabase.from("order_items").insert(invItems.map(i=>({...i,order_id:newInvId})));
-          setOrders(prev=>[{...newInv,id:savedInv.id||newInvId},...prev]);
-          showToast(`Backorder shipped → new Invoice ${savedInv.id||newInvId} created ✓`);
-        } else {
-          showToast("Backorder shipped (invoice creation failed — check DB)","warn");
+        if (savedInv) {
+          const savedId = savedInv.id || invId;
+          await supabase.from("order_items").insert(invItems.map(i=>({...i,order_id:savedId})));
+          setOrders(prev=>[{...newInv,id:savedId,items:invItems},...prev]);
         }
-      } else if (fullyComplete) {
-        showToast(`Order ${order.id} fully shipped → converted to Invoice ✓`);
-      } else if (newBackorders.length > 0) {
-        showToast(`Shipped partial — ${newBackorders.length} item(s) backordered`);
+
+        // Update original order status
+        const newOrderStatus = fullyComplete ? "invoiced" : "partial_shipped";
+        await supabase.from("orders").update({ status: newOrderStatus }).eq("id", order.id);
+        setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: newOrderStatus} : o));
+
+        // Toast
+        if (fullyComplete) {
+          showToast(`Order ${order.id} fully shipped → Invoice ${invId} created ✓`);
+        } else if (isBackorder) {
+          showToast(`Backorder shipped → Invoice ${invId} created ✓`);
+        } else {
+          showToast(`Partial shipment → Invoice ${invId} created · ${newBackorders.length} item(s) backordered`);
+        }
       } else {
-        showToast("Shipped successfully");
+        showToast("No items shipped", "warn");
       }
 
       onClose();
@@ -2886,7 +2982,10 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
               const bo = item.qty - toShip;
               return (
                 <tr key={item.product_id}>
-                  <td style={{fontWeight:500}}>{item.name}</td>
+                  <td>
+                    <div style={{fontWeight:500}}>{item.name}</div>
+                    {(()=>{const p=products?.find(x=>x.id===item.product_id);return p!=null?<div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>Current stock: <strong style={{color:p.stock===0?"var(--danger)":p.stock<=p.low_stock_threshold?"var(--warn)":"var(--success)"}}>{p.stock}</strong></div>:null;})()}
+                  </td>
                   <td style={{textAlign:"center"}}>{item.qty}</td>
                   <td style={{textAlign:"center"}}>
                     <input
@@ -2935,6 +3034,112 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── BACKORDERS PAGE ──────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
+// ─── BACKORDER STATEMENT PDF ──────────────────────────────────────────────────
+function printBackorderStatement(orderId, items, order, settings) {
+  const NAVY = "#1a3a6b";
+  const WARN = "#b45309";
+  const today_str = new Date().toLocaleDateString("en-JM", {year:"numeric",month:"long",day:"numeric"});
+  const totalQty = items.reduce((s,b)=>s+b.qty_remaining,0);
+  const totalValue = items.reduce((s,b)=>s+b.qty_remaining*(b.unit_price||0),0);
+  const fmt = n => "J$" + Number(n||0).toLocaleString();
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Backorder Statement — ${orderId}</title>
+<style>
+body{font-family:Arial,sans-serif;padding:40px;color:#1a202c;font-size:13px}
+.header{display:flex;justify-content:space-between;margin-bottom:32px}
+.stamp{display:inline-block;border:3px solid ${WARN};color:${WARN};font-size:20px;font-weight:700;
+  letter-spacing:2px;padding:6px 18px;border-radius:4px;transform:rotate(-3deg);
+  position:absolute;top:48px;right:48px;opacity:0.85}
+.section{margin-bottom:20px}
+.section h4{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#4a5568;margin-bottom:6px}
+table{width:100%;border-collapse:collapse;margin-bottom:16px}
+th{background:#fef3c7;padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:${WARN};border-bottom:2px solid #fde68a}
+td{padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:13px}
+.totals-table{width:300px;margin-left:auto}
+.grand-total td{font-weight:700;font-size:15px;color:${NAVY};border-top:2px solid #c8d6e8}
+.notice{background:#fef3c7;border:1px solid #fde68a;border-left:4px solid ${WARN};padding:12px 16px;border-radius:4px;font-size:12px;color:#78350f;margin-bottom:24px}
+.footer{margin-top:40px;padding-top:16px;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#4a5568}
+</style></head><body>
+<div style="position:relative">
+  <div class="stamp">BACK ORDER</div>
+  <div class="header">
+    <div>
+      <img src="${LOGO_SRC}" alt="Pinglinks Cellular" style="height:52px;width:auto;display:block;margin-bottom:8px"/>
+      <div style="font-size:12px;color:#4a5568;line-height:1.6">
+        Pinglinks Cellular Limited<br>
+        20A South Avenue<br>
+        Kingston 10, Jamaica<br>
+        info@pinglinkscellular.com
+      </div>
+    </div>
+    <div style="text-align:right">
+      <div style="font-size:26px;font-weight:700;color:${WARN}">BACKORDER STATEMENT</div>
+      <div style="font-size:14px;color:#4a5568;margin-top:4px">Ref: ${orderId}</div>
+      <div style="font-size:12px;color:#4a5568">Date: ${today_str}</div>
+      <div style="font-size:12px;color:#4a5568">Original Order: ${order?.date||"—"}</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:20px">
+    <div class="section"><h4>Customer</h4>
+      <div style="font-weight:600;font-size:14px">${order?.customer_name||"—"}</div>
+    </div>
+    <div class="section" style="text-align:right"><h4>Document Info</h4>
+      <div>Type: Backorder Statement</div>
+      <div>Status: Items Pending Fulfillment</div>
+    </div>
+  </div>
+
+  <div class="notice">
+    ⚠️ The items listed below could not be fulfilled at the time of your original order
+    (<strong>${orderId}</strong>). We will ship these items as soon as stock becomes available.
+    Please retain this statement for your records.
+  </div>
+
+  <table>
+    <thead><tr>
+      <th>Barcode</th><th>Brand</th><th>Product</th>
+      <th style="text-align:center">Ordered</th>
+      <th style="text-align:center">Shipped</th>
+      <th style="text-align:center">Outstanding</th>
+      <th style="text-align:right">Unit Price</th>
+      <th style="text-align:right">Est. Value</th>
+    </tr></thead>
+    <tbody>
+      ${items.map(b=>`
+        <tr>
+          <td><code style="font-size:11px">${b.barcode||"—"}</code></td>
+          <td style="color:#4a5568">${b.brand||"—"}</td>
+          <td style="font-weight:500">${b.product_name}</td>
+          <td style="text-align:center">${b.qty_ordered}</td>
+          <td style="text-align:center">${b.qty_shipped}</td>
+          <td style="text-align:center;font-weight:700;color:${WARN}">${b.qty_remaining}</td>
+          <td style="text-align:right">${fmt(b.unit_price||0)}</td>
+          <td style="text-align:right;font-weight:600">${fmt(b.qty_remaining*(b.unit_price||0))}</td>
+        </tr>`).join("")}
+    </tbody>
+  </table>
+
+  <table class="totals-table">
+    <tr><td>Total Outstanding Units</td><td style="text-align:right;font-weight:700">${totalQty}</td></tr>
+    <tr class="grand-total"><td><strong>Est. Total Value</strong></td><td style="text-align:right"><strong>${fmt(totalValue)}</strong></td></tr>
+  </table>
+
+  ${settings?.bank_name||settings?.company_phone?`
+  <div style="margin-top:24px;padding:12px 16px;background:#f7fafc;border-radius:6px;font-size:12px;color:#4a5568">
+    For enquiries about this backorder, contact us at ${settings?.company_phone||""} or ${settings?.company_email||"info@pinglinkscellular.com"}.
+  </div>`:""}
+
+  <div class="footer">Pinglinks Cellular Limited · 20A South Avenue, Kingston 10, Jamaica · info@pinglinkscellular.com</div>
+</div>
+</body></html>`;
+
+  const w = window.open("","_blank","width=900,height=700");
+  w.document.write(html); w.document.close(); w.focus(); setTimeout(()=>w.print(),400);
+}
+
+
 function BackordersPage({ backorders, setBackorders, orders, setOrders, customers, settings, showToast, products, setProducts }) {
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("open");
@@ -3025,7 +3230,13 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                 <div style={{fontFamily:"Syne",fontWeight:700}}>{orderId}</div>
                 <div style={{fontSize:11,color:"var(--text2)",marginTop:2}}>{order?.customer_name} · Ordered {order?.date}</div>
               </div>
-              <StatusBadge status={order?.status||"partial_shipped"}/>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <button className="btn btn-secondary btn-sm" onClick={()=>{
+                  const enriched=items.map(b=>({...b,brand:products?.find(p=>p.id===b.product_id)?.brand||""}));
+                  printBackorderStatement(orderId,enriched,order,settings);
+                }}>🖨 Backorder Statement</button>
+                <StatusBadge status={order?.status||"partial_shipped"}/>
+              </div>
             </div>
             <div className="card-body" style={{padding:0}}>
               <div className="tbl-wrap">
@@ -3135,7 +3346,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
     return true;
   }),[orders,search,filterStatus,filterDate]);
 
-  const {sorted,key,dir,toggle}=useSort(filtered,"date");
+  const {sorted,key,dir,toggle}=useSort(filtered,"created_at","desc");
   const pg=usePagination(sorted,20);
 
   const updateStatus=async(id,status)=>{
@@ -3185,6 +3396,7 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
               <SortTh label="Invoice" sortKey="id" current={key} dir={dir} onToggle={toggle}/>
               <SortTh label="Customer" sortKey="customer_name" current={key} dir={dir} onToggle={toggle}/>
               <SortTh label="Date" sortKey="date" current={key} dir={dir} onToggle={toggle}/>
+              <SortTh label="Created" sortKey="created_at" current={key} dir={dir} onToggle={toggle}/>
               <th>Type</th>
               <th>Payment</th>
               <SortTh label="Total" sortKey="total" current={key} dir={dir} onToggle={toggle}/>
@@ -3316,6 +3528,174 @@ function ClearancePage({ products, isAdmin, addToCart, user, cart }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─── ADMIN HOT SELLERS PAGE ───────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function AdminHotSellersPage({ products, setProducts, settings, showToast }) {
+  const [search, setSearch] = useState("");
+  const [filterBrand, setFilterBrand] = useState("All");
+  const [filterCat, setFilterCat] = useState("All");
+  const [sortBy, setSortBy] = useState("name");
+  const [busy, setBusy] = useState(null);
+
+  const active = products.filter(p => p.active);
+  const hotItems = active.filter(p => p.is_hot_seller);
+  const allBrands = ["All", ...[...new Set(active.map(p=>p.brand).filter(Boolean))].sort()];
+  const allCats = ["All", ...[...new Set(active.map(p=>p.category).filter(Boolean))].sort()];
+
+  // All products tab (for adding)
+  const eligible = active.filter(p => !p.is_hot_seller).filter(p => {
+    const q = search.toLowerCase();
+    if (filterBrand !== "All" && p.brand !== filterBrand) return false;
+    if (filterCat !== "All" && p.category !== filterCat) return false;
+    if (q && !p.name?.toLowerCase().includes(q) && !p.barcode?.includes(q) && !p.brand?.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a,b) => {
+    if (sortBy === "stock_desc") return b.stock - a.stock;
+    if (sortBy === "stock_asc") return a.stock - b.stock;
+    if (sortBy === "price_asc") return (a.wholesale_price||0) - (b.wholesale_price||0);
+    if (sortBy === "price_desc") return (b.wholesale_price||0) - (a.wholesale_price||0);
+    return (a.name||"").localeCompare(b.name||"");
+  });
+
+  const toggle = async (product, val) => {
+    setBusy(product.id);
+    const { error } = await supabase.from("products").update({ is_hot_seller: val }).eq("id", product.id);
+    if (error) { showToast("Failed to update: " + error.message, "err"); setBusy(null); return; }
+    setProducts(prev => prev.map(p => p.id === product.id ? {...p, is_hot_seller: val} : p));
+    showToast(val ? `⭐ "${product.name}" added to Hot Sellers` : `Removed "${product.name}" from Hot Sellers`);
+    setBusy(null);
+  };
+
+  const fmt = n => "J$" + Number(n||0).toLocaleString();
+
+  return (
+    <div>
+      {/* Current hot sellers */}
+      <div className="card" style={{marginBottom:20}}>
+        <div className="card-header">
+          <h3>⭐ Current Hot Sellers ({hotItems.length})</h3>
+        </div>
+        {hotItems.length === 0
+          ? <div style={{padding:"24px",textAlign:"center",color:"var(--text3)"}}>No hot sellers tagged yet — add some below.</div>
+          : <div className="tbl-wrap">
+              <table>
+                <thead><tr>
+                  <th>Product</th>
+                  <th>Brand</th>
+                  <th>Category</th>
+                  <th style={{textAlign:"right"}}>Wholesale</th>
+                  <th style={{textAlign:"center"}}>Stock</th>
+                  <th style={{textAlign:"center"}}>Visible</th>
+                  <th></th>
+                </tr></thead>
+                <tbody>{hotItems.sort((a,b)=>a.name.localeCompare(b.name)).map(p=>(
+                  <tr key={p.id}>
+                    <td>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        {p.image_url
+                          ? <img src={p.image_url} style={{width:32,height:32,objectFit:"cover",borderRadius:4,flexShrink:0}} alt=""/>
+                          : <div style={{width:32,height:32,background:"var(--bg3)",borderRadius:4,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>⭐</div>}
+                        <div>
+                          <div style={{fontWeight:500,fontSize:13}}>{p.name}</div>
+                          {p.barcode&&<div style={{fontSize:10,color:"var(--text3)"}}>{p.barcode}</div>}
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{fontSize:12,color:"var(--text2)"}}>{p.brand||"—"}</td>
+                    <td><span className="badge bb" style={{fontSize:10}}>{p.category}</span></td>
+                    <td style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>{fmt(p.wholesale_price)}</td>
+                    <td style={{textAlign:"center",fontWeight:700,color:p.stock===0?"var(--danger)":p.stock<=p.low_stock_threshold?"var(--warn)":"var(--success)"}}>{p.stock}</td>
+                    <td style={{textAlign:"center"}}>
+                      {p.wholesale_visible===false
+                        ? <span className="badge" style={{background:"var(--warn)22",color:"var(--warn)",fontSize:10}}>Hidden</span>
+                        : <span className="badge bg" style={{fontSize:10}}>Visible</span>}
+                    </td>
+                    <td>
+                      <button className="btn btn-danger btn-xs" disabled={busy===p.id}
+                        onClick={()=>toggle(p,false)}>
+                        {busy===p.id?"…":"✕ Remove"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+        }
+      </div>
+
+      {/* Add products */}
+      <div className="card">
+        <div className="card-header">
+          <h3>➕ Add Products to Hot Sellers</h3>
+        </div>
+        <div className="card-body" style={{paddingBottom:8}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
+            <div className="search-wrap" style={{flex:2,minWidth:180}}>
+              <span className="search-icon">🔍</span>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search products…"/>
+            </div>
+            <select value={filterBrand} onChange={e=>setFilterBrand(e.target.value)} style={{padding:"6px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:13}}>
+              {allBrands.map(b=><option key={b}>{b}</option>)}
+            </select>
+            <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{padding:"6px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:13}}>
+              {allCats.map(c=><option key={c}>{c}</option>)}
+            </select>
+            <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{padding:"6px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:13}}>
+              <option value="name">Sort: A–Z</option>
+              <option value="stock_desc">Stock: High–Low</option>
+              <option value="stock_asc">Stock: Low–High</option>
+              <option value="price_asc">Price: Low–High</option>
+              <option value="price_desc">Price: High–Low</option>
+            </select>
+          </div>
+        </div>
+        {eligible.length === 0
+          ? <div style={{padding:"24px",textAlign:"center",color:"var(--text3)"}}>
+              {search||filterBrand!=="All"||filterCat!=="All" ? "No products match your filters." : "All active products are already in Hot Sellers."}
+            </div>
+          : <div className="tbl-wrap">
+              <table>
+                <thead><tr>
+                  <th>Product</th>
+                  <th>Brand</th>
+                  <th>Category</th>
+                  <th style={{textAlign:"right"}}>Wholesale</th>
+                  <th style={{textAlign:"center"}}>Stock</th>
+                  <th></th>
+                </tr></thead>
+                <tbody>{eligible.map(p=>(
+                  <tr key={p.id}>
+                    <td>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        {p.image_url
+                          ? <img src={p.image_url} style={{width:32,height:32,objectFit:"cover",borderRadius:4,flexShrink:0}} alt=""/>
+                          : <div style={{width:32,height:32,background:"var(--bg3)",borderRadius:4,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>📦</div>}
+                        <div>
+                          <div style={{fontWeight:500,fontSize:13}}>{p.name}</div>
+                          {p.barcode&&<div style={{fontSize:10,color:"var(--text3)"}}>{p.barcode}</div>}
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{fontSize:12,color:"var(--text2)"}}>{p.brand||"—"}</td>
+                    <td><span className="badge bb" style={{fontSize:10}}>{p.category}</span></td>
+                    <td style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>{fmt(p.wholesale_price)}</td>
+                    <td style={{textAlign:"center",fontWeight:700,color:p.stock===0?"var(--danger)":p.stock<=p.low_stock_threshold?"var(--warn)":"var(--success)"}}>{p.stock}</td>
+                    <td>
+                      <button className="btn btn-primary btn-xs" disabled={busy===p.id}
+                        onClick={()=>toggle(p,true)}>
+                        {busy===p.id?"…":"⭐ Add"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+        }
+      </div>
+    </div>
+  );
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── HOT SELLERS PAGE ─────────────────────────────────────────────────────────
@@ -3646,6 +4026,9 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
   const [newPOForm, setNewPOForm] = useState({ supplier_id:"", supplier_name:"", expected_date:"", lot_ref:"", shipping_cost:"", notes:"" });
 
   const statusColor = { open:"var(--accent)", received:"var(--success)", partial:"var(--warn)", cancelled:"var(--danger)" };
+  const statusLabel = { open:"Open", received:"Completed", partial:"Partial", cancelled:"Cancelled" };
+  // statusLabel also available above
+  const _unused = { open:"Open", received:"Completed", partial:"Partial", cancelled:"Cancelled" };
 
   const filtered = purchaseOrders.filter(po => {
     if (filter !== "all" && po.status !== filter) return false;
@@ -3694,6 +4077,12 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
     setView("detail");
     setCreating(false);
     setNewPOForm({ supplier_id:"", supplier_name:"", expected_date:"", lot_ref:"", shipping_cost:"", notes:"" });
+    try { await supabase.from("activity_log").insert({
+      action:"po_opened",
+      details:`PO ${id} opened for ${supplierName}${newPOForm.lot_ref?" · Ref: "+newPOForm.lot_ref:""}${newPOForm.expected_date?" · Expected: "+newPOForm.expected_date:""}`,
+      entity_type:"purchase_order", entity_id:id,
+      user_name:currentUserName, timestamp:new Date().toISOString()
+    }); } catch(e) {}
     showToast("PO created — now add items");
   };
 
@@ -3727,14 +4116,18 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
         <div className="card-header" style={{justifyContent:"space-between"}}>
           <h3>📥 Batch Import PO from Template</h3>
           <button className="btn btn-secondary btn-sm" onClick={()=>{
-            const rows=[["supplier_name","expected_date","lot_ref","barcode","product_name","ordered_qty","received_qty","unit_cost","notes"],["Supplier ABC","2025-03-15","INV-001","123456","iPhone Case","50","0","850",""],["Supplier ABC","2025-03-15","INV-001","789012","USB Cable","100","50","250","Partial"]];
+            const rows=[
+                    ["supplier_name","expected_date","lot_ref","barcode","brand","product_name","category","ordered_qty","received_qty","unit_cost","wholesale_price","retail_price","low_stock_threshold","min_order","description","is_clearance","clearance_price","is_hot_seller","notes"],
+                    ["Supplier ABC","2025-03-15","INV-001","123456","Apple","iPhone 16 Pro Case","Cases","50","0","850","1200","1800","10","5","Premium case for iPhone 16 Pro","false","","false",""],
+                    ["Supplier ABC","2025-03-15","INV-001","789012","Anker","USB-C Cable 6ft","USB & AUX Cables","100","50","250","450","800","20","10","Fast charge USB-C cable","false","","false","Partial shipment"],
+                  ];
             downloadCSV(rows,"po_import_template.csv");
             showToast("Template downloaded");
           }}>⬇ Download Template</button>
         </div>
         <div className="card-body">
           <div className="alert alert-info" style={{marginBottom:8,fontSize:12}}>
-            Upload a CSV using the template format. Rows with the same supplier_name+lot_ref become one PO. Products matched by barcode, then name.
+            Upload a CSV using the template format. Rows with the same supplier_name+lot_ref become one PO. Products matched by barcode then name — new products, suppliers are created automatically.
           </div>
           <input type="file" accept=".csv" onChange={async(e)=>{
             const file=e.target.files?.[0]; if(!file) return;
@@ -3748,30 +4141,99 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
               });
               if(!dataRows.length){showToast("No data rows","err");e.target.value="";return;}
               const groups={};
+              // Build groups keyed by supplier+lot_ref
               dataRows.forEach(r=>{
                 const key=(r.supplier_name||"Unknown")+":::"+(r.lot_ref||"");
                 if(!groups[key]) groups[key]={supplier_name:r.supplier_name||"Unknown",lot_ref:r.lot_ref||"",expected_date:r.expected_date||"",items:[]};
-                const prod=products.find(p=>p.barcode&&p.barcode===r.barcode)||products.find(p=>p.name?.toLowerCase()===r.product_name?.toLowerCase());
-                groups[key].items.push({product_id:prod?.id||null,product_name:r.product_name||prod?.name||"Unknown",barcode:r.barcode||"",ordered_qty:parseInt(r.ordered_qty)||0,received_qty:parseInt(r.received_qty)||0,unit_cost:parseFloat(r.unit_cost)||0,notes:r.notes||""});
+                groups[key].items.push({
+                  barcode:r.barcode||"",
+                  product_name:r.product_name||"Unknown",
+                  brand:r.brand||"",
+                  category:r.category||"Uncategorized",
+                  ordered_qty:parseInt(r.ordered_qty)||0,
+                  received_qty:parseInt(r.received_qty)||0,
+                  unit_cost:parseFloat(r.unit_cost)||0,
+                  wholesale_price:parseFloat(r.wholesale_price)||0,
+                  retail_price:parseFloat(r.retail_price)||0,
+                  low_stock_threshold:parseInt(r.low_stock_threshold)||5,
+                  min_order:parseInt(r.min_order)||1,
+                  description:r.description||"",
+                  is_clearance:r.is_clearance?.toLowerCase()==="true",
+                  clearance_price:parseFloat(r.clearance_price)||null,
+                  is_hot_seller:r.is_hot_seller?.toLowerCase()==="true",
+                  notes:r.notes||""
+                });
               });
-              const keys=Object.keys(groups); let created=0;
+
+              const keys=Object.keys(groups);
+              let created=0, newProds=0;
+              // Local mutable copy of products for dedup within this import
+              let localProducts=[...products];
+              let localSuppliers=[...suppliers];
+
               for(let gi=0;gi<keys.length;gi++){
                 const g=groups[keys[gi]];
                 const poId="PO-"+Date.now()+"-"+gi;
+
+                // Create supplier if missing
                 let suppId=null;
-                const es=suppliers.find(s=>s.name?.toLowerCase()===g.supplier_name.toLowerCase());
-                if(es){suppId=es.id;}else{const {data:ns}=await supabase.from("suppliers").insert({name:g.supplier_name}).select().single();if(ns){suppId=ns.id;setSuppliers(prev=>[...prev,ns]);}}
+                const es=localSuppliers.find(s=>s.name?.toLowerCase()===g.supplier_name.toLowerCase());
+                if(es){suppId=es.id;}
+                else{
+                  const {data:ns}=await supabase.from("suppliers").insert({name:g.supplier_name}).select().single();
+                  if(ns){suppId=ns.id;localSuppliers=[...localSuppliers,ns];setSuppliers(localSuppliers);}
+                }
+
+                // Resolve/create products and build PO items
+                const iRows=[];
+                for(const it of g.items){
+                  // Match by barcode first, then name
+                  let prod=localProducts.find(p=>p.barcode&&p.barcode===it.barcode&&it.barcode)
+                         ||localProducts.find(p=>p.name?.toLowerCase()===it.product_name?.toLowerCase());
+                  if(!prod){
+                    // Create the product
+                    const newProd={
+                      barcode:it.barcode||"",
+                      brand:it.brand||"",
+                      name:it.product_name,
+                      category:it.category||"Uncategorized",
+                      supplier_id:suppId,
+                      cost:it.unit_cost||0,
+                      wholesale_price:it.wholesale_price||0,
+                      retail_price:it.retail_price||0,
+                      stock:0,
+                      low_stock_threshold:it.low_stock_threshold||5,
+                      min_order:it.min_order||1,
+                      description:it.description||"",
+                      is_clearance:it.is_clearance||false,
+                      clearance_price:it.clearance_price||null,
+                      is_hot_seller:it.is_hot_seller||false,
+                      wholesale_visible:true,
+                      active:true,
+                      created_at:new Date().toISOString()
+                    };
+                    const {data:savedProd}=await supabase.from("products").insert(newProd).select().single();
+                    if(savedProd){
+                      prod=savedProd;
+                      localProducts=[...localProducts,savedProd];
+                      setProducts(localProducts);
+                      newProds++;
+                    }
+                  }
+                  iRows.push({purchase_order_id:poId,product_id:prod?.id||null,product_name:it.product_name,barcode:it.barcode,ordered_qty:it.ordered_qty,received_qty:it.received_qty,unit_cost:it.unit_cost,notes:it.notes});
+                }
+
                 const poRow={id:poId,supplier_id:suppId,supplier_name:g.supplier_name,expected_date:g.expected_date||null,lot_ref:g.lot_ref||"",shipping_cost:0,notes:"Imported from template",status:"open",created_at:new Date().toISOString()};
                 const {error:pe}=await supabase.from("purchase_orders").insert(poRow);
                 if(pe){showToast("PO failed: "+pe.message,"err");continue;}
-                const iRows=g.items.map(it=>({purchase_order_id:poId,product_id:it.product_id,product_name:it.product_name,barcode:it.barcode,ordered_qty:it.ordered_qty,received_qty:it.received_qty,unit_cost:it.unit_cost,notes:it.notes}));
                 await supabase.from("purchase_order_items").insert(iRows);
                 const status=g.items.every(it=>it.received_qty>=it.ordered_qty&&it.ordered_qty>0)?"received":g.items.some(it=>it.received_qty>0)?"partial":"open";
                 if(status!=="open") await supabase.from("purchase_orders").update({status}).eq("id",poId);
                 setPurchaseOrders(prev=>[{...poRow,status,items:g.items},...prev]);
                 created++;
               }
-              showToast(created+" PO"+(created!==1?"s":"")+" imported");
+              const msg=created+" PO"+(created!==1?"s":"")+" imported"+(newProds>0?` · ${newProds} new product${newProds!==1?"s":""} created`:"");
+              showToast(msg);
             } catch(err){showToast("Import error: "+err.message,"err");}
             e.target.value="";
           }}/>
@@ -3944,12 +4406,14 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
     await supabase.from("purchase_order_items").update({received_qty:newReceived, unit_cost:newCost}).eq("id",item.id);
     const updatedItems = (po.items||[]).map(i=>i.id===item.id?{...i,received_qty:newReceived,unit_cost:newCost}:i);
 
-    // Auto-update PO status
-    const allDone = updatedItems.every(i=>(i.received_qty||0)>= i.ordered_qty);
+    // Auto-update PO status — never auto-complete to "received", only track partial progress
     const anyDone = updatedItems.some(i=>(i.received_qty||0)>0);
-    const newStatus = allDone?"received":anyDone?"partial":po.status==="cancelled"?"cancelled":"open";
-    if (newStatus !== po.status) await supabase.from("purchase_orders").update({status:newStatus}).eq("id",po.id);
-
+    const autoStatus = anyDone?"partial":po.status==="cancelled"?"cancelled":"open";
+    // Only update if not already completed/cancelled
+    if (po.status!=="received"&&po.status!=="cancelled"&&autoStatus !== po.status){
+      await supabase.from("purchase_orders").update({status:autoStatus}).eq("id",po.id);
+    }
+    const newStatus = po.status==="received"||po.status==="cancelled" ? po.status : autoStatus;
     setPO({...po, items:updatedItems, status:newStatus});
     setReceivingItem(null);
     showToast(`✓ ${receiveQty} units received into inventory`);
@@ -3963,7 +4427,37 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
     showToast("Item removed");
   };
 
+  const markCompleted = async () => {
+    if (!confirm("Mark this PO as Completed? It will become view-only.")) return;
+    await supabase.from("purchase_orders").update({status:"received"}).eq("id",po.id);
+    setPO({...po, status:"received"});
+    try { await supabase.from("activity_log").insert({
+      action:"po_completed",
+      details:`PO ${po.id} marked completed (${po.supplier_name} · ${(po.items||[]).length} items · ${(po.items||[]).reduce((s,i)=>s+(i.ordered_qty||0),0)} units)`,
+      entity_type:"purchase_order", entity_id:po.id,
+      user_name:currentUserName, timestamp:new Date().toISOString()
+    }); } catch(e) {}
+    showToast("PO marked as Completed ✓");
+  };
+
+  const reopenPO = async () => {
+    if (!confirm("Reopen this PO for editing?")) return;
+    const anyReceived = (po.items||[]).some(i=>(i.received_qty||0)>0);
+    const newStatus = anyReceived ? "partial" : "open";
+    await supabase.from("purchase_orders").update({status:newStatus}).eq("id",po.id);
+    setPO({...po, status:newStatus});
+    try { await supabase.from("activity_log").insert({
+      action:"po_reopened",
+      details:`PO ${po.id} reopened`,
+      entity_type:"purchase_order", entity_id:po.id,
+      user_name:currentUserName, timestamp:new Date().toISOString()
+    }); } catch(e) {}
+    showToast("PO reopened");
+  };
+
+  const isCompleted = po.status==="received";
   const statusColor = { open:"var(--accent)", received:"var(--success)", partial:"var(--warn)", cancelled:"var(--danger)" };
+  const statusLabel = { open:"Open", received:"Completed", partial:"Partial", cancelled:"Cancelled" };
 
   return (
     <div>
@@ -3972,10 +4466,12 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
         <div style={{display:"flex",alignItems:"center",gap:12}}>
           <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back</button>
           <h2 style={{margin:0,fontSize:18}}>Purchase Order <code style={{color:"var(--accent)"}}>{po.id}</code></h2>
-          <span className="badge" style={{background:`${statusColor[po.status]||"var(--accent)"}22`,color:statusColor[po.status]||"var(--accent)"}}>{po.status}</span>
+          <span className="badge" style={{background:`${statusColor[po.status]||"var(--accent)"}22`,color:statusColor[po.status]||"var(--accent)"}}>{statusLabel[po.status]||po.status}</span>
         </div>
         <div style={{display:"flex",gap:8}}>
-          {po.status!=="received"&&po.status!=="cancelled"&&<button className="btn btn-secondary btn-sm" onClick={()=>setEditHeader(!editHeader)}>{editHeader?"✕ Cancel":"✏️ Edit Details"}</button>}
+          {isCompleted&&<button className="btn btn-secondary btn-sm" onClick={reopenPO}>🔓 Reopen P.O.</button>}
+          {!isCompleted&&po.status!=="cancelled"&&<button className="btn btn-secondary btn-sm" onClick={()=>setEditHeader(!editHeader)}>{editHeader?"✕ Cancel":"✏️ Edit Details"}</button>}
+          {!isCompleted&&po.status!=="cancelled"&&<button className="btn btn-primary btn-sm" onClick={markCompleted}>✓ Mark Completed</button>}
         </div>
       </div>
 
@@ -4021,7 +4517,7 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
       </div>
 
       {/* Add item bar */}
-      {po.status!=="received"&&po.status!=="cancelled"&&(
+      {!isCompleted&&po.status!=="cancelled"&&(
         <div className="card" style={{marginBottom:16,padding:"12px 16px"}}>
           <div style={{display:"flex",gap:10,alignItems:"center"}}>
             <div style={{position:"relative",flex:1}}>
@@ -4089,30 +4585,37 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
                     </td>
                     <td><code style={{fontSize:11,color:"var(--text3)"}}>{item.barcode||"—"}</code></td>
                     <td style={{textAlign:"center"}}>
-                      <input type="number" min={1} defaultValue={item.ordered_qty}
-                        onBlur={e=>{ if(+e.target.value!==item.ordered_qty) updateItemField(item,"ordered_qty",e.target.value); }}
-                        style={{width:70,textAlign:"center"}}/>
+                      {isCompleted
+                        ? <span style={{fontWeight:700}}>{item.ordered_qty}</span>
+                        : <input type="number" min={1} defaultValue={item.ordered_qty}
+                            onBlur={e=>{ if(+e.target.value!==item.ordered_qty) updateItemField(item,"ordered_qty",e.target.value); }}
+                            style={{width:70,textAlign:"center"}}/>}
                     </td>
                     <td style={{textAlign:"center",fontWeight:700,color:fullyReceived?"var(--success)":item.received_qty>0?"var(--warn)":"var(--text3)"}}>{item.received_qty||0}</td>
                     <td style={{textAlign:"center",fontWeight:700,color:remaining>0?"var(--accent)":"var(--success)"}}>{remaining>0?remaining:"✓ Done"}</td>
                     <td style={{textAlign:"right"}}>
-                      <input type="number" min={0} defaultValue={item.unit_cost||0}
-                        onBlur={e=>{ if(+e.target.value!==(item.unit_cost||0)) updateItemField(item,"unit_cost",e.target.value); }}
-                        style={{width:90,textAlign:"right"}}/>
+                      {isCompleted
+                        ? <span style={{fontWeight:700}}>{fmt(item.unit_cost||0)}</span>
+                        : <input type="number" min={0} defaultValue={item.unit_cost||0}
+                            onBlur={e=>{ if(+e.target.value!==(item.unit_cost||0)) updateItemField(item,"unit_cost",e.target.value); }}
+                            style={{width:90,textAlign:"right"}}/>}
                     </td>
                     <td style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>{fmt((item.ordered_qty||0)*(item.unit_cost||0))}</td>
                     <td>
-                      <input defaultValue={item.note||""} placeholder="—"
-                        onBlur={e=>updateItemField(item,"note",e.target.value)}
-                        style={{width:100,fontSize:11,padding:"2px 6px",border:"1px solid var(--border)",borderRadius:4}}/>
+                      {isCompleted
+                        ? <span style={{fontSize:11,color:"var(--text3)"}}>{item.note||"—"}</span>
+                        : <input defaultValue={item.note||""} placeholder="—"
+                            onBlur={e=>updateItemField(item,"note",e.target.value)}
+                            style={{width:100,fontSize:11,padding:"2px 6px",border:"1px solid var(--border)",borderRadius:4}}/>}
                     </td>
                     <td>
                       <div style={{display:"flex",gap:4}}>
-                        {!fullyReceived&&po.status!=="cancelled"&&(
+                        {isCompleted&&<span className="badge bg" style={{fontSize:10}}>✓ Done</span>}
+                        {!isCompleted&&!fullyReceived&&po.status!=="cancelled"&&(
                           <button className="btn btn-primary btn-xs" onClick={()=>setReceivingItem(item)}>📥 Receive</button>
                         )}
-                        {fullyReceived&&<span className="badge bg" style={{fontSize:10}}>✓ Received</span>}
-                        {!item.received_qty&&<button className="btn btn-danger btn-xs" onClick={()=>deleteItem(item)}>✕</button>}
+                        {!isCompleted&&fullyReceived&&<span className="badge bg" style={{fontSize:10}}>✓ Received</span>}
+                        {!isCompleted&&!item.received_qty&&<button className="btn btn-danger btn-xs" onClick={()=>deleteItem(item)}>✕</button>}
                       </div>
                     </td>
                   </tr>
@@ -4323,14 +4826,16 @@ function CustomerCartsPage({ customerCarts, setCustomerCarts, customers, orders,
     const updatedAt = c.updated_at ? new Date(c.updated_at) : null;
     const minutesAgo = updatedAt ? Math.floor((Date.now()-updatedAt)/60000) : null;
     const hoursAgo = minutesAgo !== null ? Math.floor(minutesAgo/60) : null;
-    const isAbandoned = hoursAgo !== null && hoursAgo >= 2 && c.status === "active" && items.length > 0;
+    // Abandoned = active cart with items, untouched for 24+ hours
+    const isAbandoned = hoursAgo !== null && hoursAgo >= 24 && c.status === "active" && items.length > 0;
     return { ...c, items, cust, lastOrder, minutesAgo, hoursAgo, isAbandoned };
   });
 
   const filtered = enriched.filter(c => {
     if (filter === "active") return c.status === "active" && c.items.length > 0 && !c.isAbandoned;
     if (filter === "abandoned") return c.isAbandoned;
-    if (filter === "converted") return c.status === "converted";
+    // Converted = status flag OR customer has at least one order placed
+    if (filter === "converted") return c.status === "converted" || (c.lastOrder != null);
     return true;
   });
 
@@ -4741,7 +5246,7 @@ function ActivityLogPage({ activityLog, setActivityLog }) {
     "product_added":"var(--success)","product_updated":"var(--accent)","product_archived":"var(--warn)",
     "product_deleted":"var(--danger)","customer_approved":"var(--success)","customer_created":"var(--accent2)",
     "customer_deleted":"var(--danger)","customer_revoked":"var(--warn)","order_placed":"var(--accent)",
-    "order_status":"var(--accent2)","stock_take":"var(--accent4)","transfer":"var(--accent3)",
+    "order_status":"var(--accent2)","stock_take":"var(--accent4)","transfer":"var(--accent3)","po_opened":"var(--accent2)","po_completed":"var(--success)","po_reopened":"var(--warn)","user_login":"var(--success)","user_logout":"var(--text3)",
     "settings_updated":"var(--text3)"
   };
 
@@ -5439,7 +5944,7 @@ function CatalogPage({ products, user, addToCart, cart, settings }) {
     <div className="empty"><div className="ei">⏳</div><h3 style={{marginBottom:8}}>Account Pending Approval</h3><p>Your wholesale account is being reviewed. Contact us at +1-876-276-7464 to expedite.</p></div>
   );
 
-  const visible=products.filter(p=>p.active&&p.stock>0&&!p.is_clearance);
+  const visible=products.filter(p=>p.active&&p.stock>0&&!p.is_clearance&&p.wholesale_visible!==false);
   const newArrivals=visible.filter(p=>isNewArrival(p));
 
   const showProducts = tab==="new" ? newArrivals : visible;
@@ -5790,10 +6295,10 @@ function InvoiceViewModal({ order, settings, customers, products, onClose }) {
   const exportCSV=()=>{
     const rows=[
       ["Invoice",order.id],["Customer",order.customer_name],["Date",order.date],["Status",order.status],["Payment",order.payment_method||"—"],[""],
-      ["Product","Barcode","Qty","Unit Cost","Unit Price","Line Total"],
+      ["Product","Brand","Barcode","Qty","Unit Cost","Unit Price","Line Total"],
       ...(order.items||[]).map(i=>{
         const prod=(products||[]).find(p=>p.id===i.product_id);
-        return [i.name,i.barcode||"—",i.qty,Number(prod?.cost||0),Number(i.unit_price||0),Number(((i.unit_price||0)*i.qty).toFixed(2))];
+        return [i.name,prod?.brand||"",i.barcode||"—",i.qty,Number(prod?.cost||0),Number(i.unit_price||0),Number(((i.unit_price||0)*i.qty).toFixed(2))];
       }),
       [""],["Subtotal","","","","",order.subtotal||0],[`GCT (${order.tax_rate||0}%)`,"","","","",order.tax_amount||0],["Total","","","","",order.total||0]
     ];
