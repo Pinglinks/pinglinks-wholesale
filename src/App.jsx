@@ -404,15 +404,31 @@ ${(!isConsignment&&(settings.bank_name||settings.payment_link))?`
 </body></html>`;
 }
 
-function printInvoice(order, customer, settings, isConsignment=false) {
-  const html = buildInvoiceHTML(order, customer, settings, isConsignment);
+function printInvoice(order, customer, settings, isConsignment=false, docLabel=null) {
+  const resolvedLabel = docLabel || (isConsignment ? "DELIVERY NOTE" : "INVOICE");
+  const html = buildInvoiceHTML(order, customer, settings, isConsignment, resolvedLabel);
   const w = window.open("","_blank","width=800,height=600");
   w.document.write(html); w.document.close(); w.focus(); setTimeout(()=>w.print(),400);
 }
 
 // ─── STATUS BADGE ─────────────────────────────────────────────────────────────
 function StatusBadge({ status }) {
-  const map = { order:["bw","📋 Order"], partial_shipped:["bo","📦 Partial"], invoiced:["bg","🧾 Invoiced"], pending:["bw","⏳ Pending"], processing:["bb","🔄 Processing"], shipped:["bb","🚚 Shipped"], paid:["bg","✓ Paid"], delivered:["bg","✓ Delivered"], cancelled:["br","✕ Cancelled"], open:["bb","⏳ Open"], fulfilled:["bg","✓ Fulfilled"] };
+  const map = {
+    order:          ["bw",  "📋 Order"],
+    partial_shipped:["bo",  "📦 Partial"],
+    invoiced:       ["bo",  "🧾 Awaiting Payment"],
+    delivery_note:  ["bb",  "📦 Delivery Note"],
+    pending:        ["bw",  "⏳ Pending"],
+    processing:     ["bb",  "🔄 Processing"],
+    shipped:        ["bb",  "🚚 Shipped"],
+    paid:           ["bg",  "✓ Paid"],
+    delivered:      ["bg",  "✓ Delivered"],
+    cancelled:      ["br",  "✕ Cancelled"],
+    open:           ["bb",  "⏳ Open"],
+    fulfilled:      ["bg",  "✓ Fulfilled"],
+    refunded:       ["br",  "↩ Refunded"],
+    partial_refund: ["bo",  "↩ Part. Refund"],
+  };
   const [cls,label] = map[status]||["bgr",status];
   return <span className={`badge ${cls}`}>{label}</span>;
 }
@@ -485,7 +501,27 @@ function SortTh({ label, sortKey, current, dir, onToggle }) {
 export default function App() {
   // ── State ──
   const [user, setUser]         = useState(null);
-  const [page, setPage]         = useState("dashboard");
+  const [page, setPageRaw] = useState(() => {
+    // On first load, read page from URL hash if present
+    const hash = window.location.hash.replace("#","");
+    return hash || "dashboard";
+  });
+  // Wrap setPage to also push browser history state
+  const setPage = (newPage) => {
+    setPageRaw(newPage);
+    window.history.pushState({page: newPage}, "", "#" + newPage);
+  };
+  // Listen for browser back/forward
+  React.useEffect(() => {
+    const onPop = (e) => {
+      const p = e.state?.page || window.location.hash.replace("#","") || "dashboard";
+      setPageRaw(p);
+    };
+    window.addEventListener("popstate", onPop);
+    // Set initial history entry so back button has somewhere to go
+    window.history.replaceState({page}, "", "#" + page);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [orders, setOrders]     = useState([]);
@@ -881,7 +917,7 @@ export default function App() {
             {page==="customers" && <CustomersPage customers={customers} setCustomers={setCustomers} orders={orders} salesReps={salesReps} showToast={showToast}/>}
             {page==="carts" && <CustomerCartsPage customerCarts={customerCarts} setCustomerCarts={setCustomerCarts} customers={customers} orders={orders} products={products} showToast={showToast}/>}
             {page==="analytics" && <AnalyticsPage products={products} orders={orders} customers={customers} transfers={transfers}/>}
-            {page==="activitylog" && <ActivityLogPage activityLog={activityLog} setActivityLog={setActivityLog}/>}
+            {page==="activitylog" && <ActivityLogPage activityLog={activityLog} setActivityLog={setActivityLog} products={products}/>}
             {page==="settings" && <SettingsPage settings={settings} setSettings={setSettings} showToast={showToast}/>}
 
             {page==="salesreps" && <SalesRepsPage salesReps={salesReps} setSalesReps={setSalesReps} showToast={showToast}/>}
@@ -1037,28 +1073,77 @@ function LoginPage({ onLogin }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function DashboardPage({ products, orders, customers, transfers, settings, setPage }) {
   const activeProducts = products.filter(p=>p.active);
-  const totalCost = activeProducts.reduce((s,p)=>s+p.cost*p.stock,0);
-  const totalRetail = activeProducts.reduce((s,p)=>s+p.retail_price*p.stock,0);
+  const totalCost      = activeProducts.reduce((s,p)=>s+p.cost*p.stock,0);
+  const totalRetail    = activeProducts.reduce((s,p)=>s+p.retail_price*p.stock,0);
   const totalWholesale = activeProducts.reduce((s,p)=>s+p.wholesale_price*p.stock,0);
-  const totalItems = activeProducts.reduce((s,p)=>s+p.stock,0);
-  const totalSKUs = activeProducts.length;
-  const lowStock = activeProducts.filter(p=>p.stock>0&&p.stock<=p.low_stock_threshold).length;
-  const outOfStock = activeProducts.filter(p=>p.stock===0).length;
+  const totalItems     = activeProducts.reduce((s,p)=>s+p.stock,0);
+  const totalSKUs      = activeProducts.length;
+  const lowStock       = activeProducts.filter(p=>p.stock>0&&p.stock<=p.low_stock_threshold).length;
+  const outOfStock     = activeProducts.filter(p=>p.stock===0).length;
   const pendingApprovals = customers.filter(c=>!c.approved).length;
-  const revenueThisMonth = orders.filter(o=>o.date?.startsWith(today().slice(0,7))&&o.type!=="consignment").reduce((s,o)=>s+o.total,0);
-  const newArrivals = activeProducts.filter(p=>isNewArrival(p)&&p.stock>0).slice(0,5);
+
+  const thisMonth = today().slice(0,7);
+
+  // Revenue = only paid/delivered upfront orders
+  const paidOrders       = orders.filter(o=>o.type!=="consignment"&&(o.status==="paid"||o.status==="delivered"));
+  const paidThisMonth    = paidOrders.filter(o=>o.date?.startsWith(thisMonth));
+  const revenueThisMonth = paidThisMonth.reduce((s,o)=>s+(o.total||0),0);
+  const taxThisMonth     = paidThisMonth.reduce((s,o)=>s+(o.tax_amount||0),0);
+
+  // Awaiting payment = invoiced upfront orders
+  const awaitingPayment      = orders.filter(o=>o.status==="invoiced"&&o.type!=="consignment");
+  const awaitingTotal        = awaitingPayment.reduce((s,o)=>s+(o.total||0),0);
+  const awaitingThisMonth    = awaitingPayment.filter(o=>o.date?.startsWith(thisMonth));
+  const awaitingMonthTotal   = awaitingThisMonth.reduce((s,o)=>s+(o.total||0),0);
+
+  // Active orders (pending shipment)
+  const pendingOrders = orders.filter(o=>o.status==="order"||o.status==="partial_shipped");
+
+  const newArrivals  = activeProducts.filter(p=>isNewArrival(p)&&p.stock>0).slice(0,5);
   const lowStockItems = activeProducts.filter(p=>p.stock>0&&p.stock<=p.low_stock_threshold).slice(0,5);
 
   return (
     <div>
-      {/* Stats */}
-      <div className="stats-grid">
-        <div className="stat c1"><div className="stat-label">Inventory Cost</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalCost)}</div><div className="stat-sub">Total cost value</div></div>
-        <div className="stat c2"><div className="stat-label">Retail Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalRetail)}</div><div className="stat-sub">At retail prices</div></div>
-        <div className="stat c3"><div className="stat-label">Wholesale Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalWholesale)}</div><div className="stat-sub">At wholesale prices</div></div>
-        <div className="stat c4"><div className="stat-label">SKUs</div><div className="stat-val">{fmtNum(totalSKUs)}</div><div className="stat-sub">Active products</div></div>
-        <div className="stat c5"><div className="stat-label">Total Items</div><div className="stat-val">{fmtNum(totalItems)}</div><div className="stat-sub">Units in stock</div></div>
-        <div className="stat c6"><div className="stat-label">Low Stock</div><div className="stat-val">{lowStock}</div><div className="stat-sub">{outOfStock} out of stock</div></div>
+      {/* Row 1: Financials */}
+      <div style={{marginBottom:6,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:"var(--text3)"}}>This Month</div>
+      <div className="stats-grid" style={{marginBottom:20}}>
+        <div className="stat c1" style={{cursor:"pointer"}} onClick={()=>setPage("analytics")}>
+          <div className="stat-label">Revenue Collected</div>
+          <div className="stat-val" style={{fontSize:18}}>{fmt(revenueThisMonth)}</div>
+          <div className="stat-sub">{paidThisMonth.length} paid orders</div>
+        </div>
+        <div className="stat c3">
+          <div className="stat-label">GCT Collected</div>
+          <div className="stat-val" style={{fontSize:18}}>{fmt(taxThisMonth)}</div>
+          <div className="stat-sub">on paid orders</div>
+        </div>
+        <div className="stat c5" style={{cursor:"pointer"}} onClick={()=>setPage("invoices")}>
+          <div className="stat-label">⏳ Awaiting Payment</div>
+          <div className="stat-val" style={{fontSize:18,color:"var(--warn)"}}>{fmt(awaitingTotal)}</div>
+          <div className="stat-sub">{awaitingPayment.length} invoice{awaitingPayment.length!==1?"s":""} outstanding · {fmt(awaitingMonthTotal)} this month</div>
+        </div>
+        <div className="stat c2" style={{cursor:"pointer"}} onClick={()=>setPage("orders")}>
+          <div className="stat-label">Pending Orders</div>
+          <div className="stat-val" style={{fontSize:18}}>{pendingOrders.length}</div>
+          <div className="stat-sub">awaiting shipment</div>
+        </div>
+        <div className="stat c4">
+          <div className="stat-label">Inventory Cost</div>
+          <div className="stat-val" style={{fontSize:18}}>{fmt(totalCost)}</div>
+          <div className="stat-sub">{fmtNum(totalSKUs)} SKUs · {fmtNum(totalItems)} units</div>
+        </div>
+        <div className="stat c6" style={{cursor:"pointer"}} onClick={()=>setPage("products")}>
+          <div className="stat-label">Stock Alerts</div>
+          <div className="stat-val" style={{fontSize:18,color:outOfStock>0?"var(--danger)":"var(--warn)"}}>{lowStock + outOfStock}</div>
+          <div className="stat-sub">{lowStock} low · {outOfStock} out of stock</div>
+        </div>
+      </div>
+
+      <div style={{marginBottom:6,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:"var(--text3)"}}>Inventory</div>
+      <div className="stats-grid" style={{marginBottom:20,gridTemplateColumns:"repeat(3,1fr)"}}>
+        <div className="stat c4"><div className="stat-label">Inventory Cost</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalCost)}</div><div className="stat-sub">{fmtNum(totalSKUs)} SKUs · {fmtNum(totalItems)} units</div></div>
+        <div className="stat c2"><div className="stat-label">Wholesale Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalWholesale)}</div><div className="stat-sub">at wholesale prices</div></div>
+        <div className="stat c3"><div className="stat-label">Retail Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalRetail)}</div><div className="stat-sub">at retail prices</div></div>
       </div>
 
       <div className="two-col" style={{gap:18,marginBottom:18}}>
@@ -1987,7 +2072,7 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
   };
   const startNewTake = () => {
     const id = genId("ST", stockTakes);
-    const draft = { id, date: today(), status: "draft" };
+    const draft = { id, date: today(), status: "draft", started_at: new Date().toISOString() };
     setDraftST(draft);
     saveCounts({});
     saveNotes("");
@@ -2036,7 +2121,8 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
     });
     if(!items.length){showToast("No counts entered","err");return;}
     const stId=draftST?.id||genId("ST",stockTakes);
-    const stRow = {id:stId, date:today(), status:"completed", notes};
+    const completedAt = new Date().toISOString();
+    const stRow = {id:stId, date:today(), status:"completed", notes, started_at: draftST?.started_at||completedAt, completed_at: completedAt};
     // Save stock take to Supabase — always continue even if table/RLS doesn't exist
     try {
       const {error:stErr} = await supabase.from("stock_takes").insert(stRow);
@@ -2183,6 +2269,8 @@ function StockTakePage({ products, setProducts, stockTakes, setStockTakes, showT
                   <div>
                     <div style={{fontFamily:"Syne",fontWeight:700}}>{st.id}</div>
                     <div style={{fontSize:12,color:"var(--text2)",marginTop:2}}>{st.date} · {st.items.length} items counted</div>
+                    {st.started_at&&<div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>🕐 Started: {new Date(st.started_at).toLocaleString("en-JM",{month:"short",day:"numeric",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>}
+                    {st.completed_at&&<div style={{fontSize:11,color:"var(--success)",marginTop:1}}>✅ Completed: {new Date(st.completed_at).toLocaleString("en-JM",{month:"short",day:"numeric",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>}
                     {st.notes&&<div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{st.notes}</div>}
                   </div>
                   <div style={{textAlign:"right"}}>
@@ -2429,7 +2517,7 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
       </div>
 
       {/* New transfer form */}
-      {showNewForm&&!draft&&(
+      {showNewForm&&(
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header"><h3>🏪 Start New Transfer</h3></div>
           <div className="card-body">
@@ -2812,94 +2900,119 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
   const [filterDate, setFilterDate] = useState("");
   const [shipModal, setShipModal] = useState(null);
   const [showCreateOrder, setShowCreateOrder] = useState(false);
+  const [showEmailModal, setShowEmailModal] = useState(null);
+  const [cancelModal, setCancelModal] = useState(null);
+  const [tab, setTab] = useState("active");
 
   const activeOrders = useMemo(() => orders.filter(o => {
-    if (o.status !== "order") return false; // only pure pending orders; partial_shipped are in backorders
+    if (o.status !== "order") return false;
     if (filterDate && !o.date?.startsWith(filterDate)) return false;
     const q = search.toLowerCase();
     if (q && !o.id.toLowerCase().includes(q) && !o.customer_name?.toLowerCase().includes(q)) return false;
     return true;
   }), [orders, search, filterDate]);
 
+  const cancelledOrders = useMemo(() => orders.filter(o => {
+    if (o.status !== "cancelled") return false;
+    const q = search.toLowerCase();
+    if (q && !o.id.toLowerCase().includes(q) && !o.customer_name?.toLowerCase().includes(q)) return false;
+    return true;
+  }), [orders, search]);
+
   const { sorted, key, dir, toggle } = useSort(activeOrders, "date");
   const pg = usePagination(sorted, 20);
+  const { sorted: sortedCancelled } = useSort(cancelledOrders, "date");
+  const pgC = usePagination(sortedCancelled, 20);
+
+  const doCancel = async (order, reason) => {
+    const note = reason ? `Cancelled: ${reason}` : "Cancelled by admin";
+    const newNotes = order.notes ? order.notes + "\n" + note : note;
+    const { error } = await supabase.from("orders").update({ status: "cancelled", notes: newNotes }).eq("id", order.id);
+    if (error) { showToast("Failed to cancel: " + error.message, "err"); return; }
+    setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: "cancelled", notes: newNotes } : o));
+    try { await supabase.from("activity_log").insert({ action: "order_status", details: `Order ${order.id} cancelled${reason ? ": " + reason : ""}`, entity_type: "order", entity_id: order.id, user_name: currentUserName, timestamp: new Date().toISOString() }); } catch(e) {}
+    showToast(`Order ${order.id} cancelled`);
+    setCancelModal(null);
+  };
+
+  const tableHeaders = (
+    <thead><tr>
+      <SortTh label="Order #" sortKey="id" current={key} dir={dir} onToggle={toggle}/>
+      <SortTh label="Customer" sortKey="customer_name" current={key} dir={dir} onToggle={toggle}/>
+      <SortTh label="Date" sortKey="date" current={key} dir={dir} onToggle={toggle}/>
+      <th>Type</th><th>Payment</th>
+      <SortTh label="Total" sortKey="total" current={key} dir={dir} onToggle={toggle}/>
+      <th>Status</th><th>Actions</th>
+    </tr></thead>
+  );
+
+  const renderRow = (o, isActive) => (
+    <tr key={o.id}>
+      <td><code>{o.id}</code></td>
+      <td style={{fontWeight:500}}>{o.customer_name}</td>
+      <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
+      <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
+      <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"\u2014"}</td>
+      <td style={{fontWeight:600,color:"var(--accent)"}}>
+        {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
+      </td>
+      <td><StatusBadge status={o.status}/></td>
+      <td><div className="tbl-actions">
+        {isActive&&<button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>View & Ship</button>}
+        {isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>\u{1F4E7}</button>}
+        {isActive&&<button className="btn btn-danger btn-xs" onClick={()=>setCancelModal(o)}>\u2715</button>}
+        {!isActive&&o.notes&&<span style={{fontSize:11,color:"var(--text3)",maxWidth:220,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={o.notes}>{o.notes}</span>}
+      </div></td>
+    </tr>
+  );
 
   return (
     <>
       <div className="filter-bar">
         <div className="search-wrap" style={{flex:2}}>
-          <span className="search-icon">🔍</span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by order # or customer…"/>
+          <span className="search-icon">\u{1F50D}</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by order # or customer\u2026"/>
         </div>
         <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
         <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
         <button className="btn btn-primary btn-sm" onClick={()=>setShowCreateOrder(true)}>+ Create Order</button>
       </div>
 
+      <div className="tabs" style={{marginBottom:0}}>
+        <button className={`tab ${tab==="active"?"active":""}`} onClick={()=>setTab("active")}>
+          Active {activeOrders.length>0&&<span className="badge bb" style={{fontSize:9,marginLeft:4}}>{activeOrders.length}</span>}
+        </button>
+        <button className={`tab ${tab==="cancelled"?"active":""}`} onClick={()=>setTab("cancelled")}>
+          Cancelled {cancelledOrders.length>0&&<span className="badge br" style={{fontSize:9,marginLeft:4}}>{cancelledOrders.length}</span>}
+        </button>
+      </div>
+
       <div className="card">
         <div className="tbl-wrap">
           <table>
-            <thead><tr>
-              <SortTh label="Order #" sortKey="id" current={key} dir={dir} onToggle={toggle}/>
-              <SortTh label="Customer" sortKey="customer_name" current={key} dir={dir} onToggle={toggle}/>
-              <SortTh label="Date" sortKey="date" current={key} dir={dir} onToggle={toggle}/>
-              <th>Type</th>
-              <th>Payment</th>
-              <SortTh label="Total" sortKey="total" current={key} dir={dir} onToggle={toggle}/>
-              <th>Actions</th>
-            </tr></thead>
-            <tbody>{pg.sliced.map(o => (
-              <tr key={o.id}>
-                <td><code>{o.id}</code></td>
-                <td style={{fontWeight:500}}>{o.customer_name}</td>
-                <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
-                <td style={{fontSize:11,color:"var(--text3)"}}>{o.created_at?new Date(o.created_at).toLocaleString("en-JM",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"—"}</td>
-                <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
-                <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>
-                  {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
-                </td>
-                <td><StatusBadge status={o.status}/></td>
-                <td><div className="tbl-actions">
-                  <button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>📋 View & Ship</button>
-                </div></td>
-              </tr>
-            ))}
-            {pg.sliced.length === 0 && <tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No active orders.</td></tr>}
+            {tableHeaders}
+            <tbody>
+              {tab==="active"&&<>
+                {pg.sliced.map(o=>renderRow(o,true))}
+                {pg.sliced.length===0&&<tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No active orders.</td></tr>}
+              </>}
+              {tab==="cancelled"&&<>
+                {pgC.sliced.map(o=>renderRow(o,false))}
+                {pgC.sliced.length===0&&<tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No cancelled orders.</td></tr>}
+              </>}
             </tbody>
           </table>
         </div>
         <div style={{padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"1px solid var(--border)"}}>
-          <span style={{fontSize:12,color:"var(--text3)"}}>{pg.total} order{pg.total!==1?"s":""}</span>
-          <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage}/>
+          <span style={{fontSize:12,color:"var(--text3)"}}>{tab==="active"?pg.total:pgC.total} order{(tab==="active"?pg.total:pgC.total)!==1?"s":""}</span>
+          <Pagination page={tab==="active"?pg.page:pgC.page} totalPages={tab==="active"?pg.totalPages:pgC.totalPages} setPage={tab==="active"?pg.setPage:pgC.setPage}/>
         </div>
       </div>
 
-      {shipModal && (
-        <ShipOrderModal
-          order={shipModal}
-          orders={orders}
-          setOrders={setOrders}
-          backorders={backorders}
-          setBackorders={setBackorders}
-          products={products}
-          setProducts={setProducts}
-          settings={settings}
-          showToast={showToast}
-          onClose={()=>setShipModal(null)}
-        />
-      )}
-      {showCreateOrder && (
-        <AdminCreateOrderModal
-          customers={customers}
-          products={products}
-          orders={orders}
-          setOrders={setOrders}
-          settings={settings}
-          showToast={showToast}
-          onClose={()=>setShowCreateOrder(false)}
-        />
-      )}
+      {shipModal&&<ShipOrderModal order={shipModal} orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} products={products} setProducts={setProducts} settings={settings} showToast={showToast} onClose={()=>setShipModal(null)}/>}
+      {showEmailModal&&<OrderEmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
+      {cancelModal&&<CancelReasonModal title="Cancel Order" itemLabel={`${cancelModal.id} \u2014 ${cancelModal.customer_name}`} onConfirm={r=>doCancel(cancelModal,r)} onClose={()=>setCancelModal(null)}/>}
+      {showCreateOrder&&<AdminCreateOrderModal customers={customers} products={products} orders={orders} setOrders={setOrders} settings={settings} showToast={showToast} onClose={()=>setShowCreateOrder(false)}/>}
     </>
   );
 }
@@ -2923,16 +3036,31 @@ function AdminCreateOrderModal({ customers, products, orders, setOrders, setting
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [prodFilterBrand, setProdFilterBrand] = useState("Brand");
+  const [prodFilterCat, setProdFilterCat] = useState("Category");
+  const [prodSortKey, setProdSortKey] = useState("name");
+
   const activeProducts = products.filter(p=>p.active&&p.wholesale_visible!==false);
+  const prodBrands = ["Brand",...[...new Set(activeProducts.map(p=>p.brand).filter(Boolean))].sort()];
+  const prodCats   = ["Category",...[...new Set(activeProducts.map(p=>p.category).filter(Boolean))].sort()];
+
   const searchedProducts = activeProducts.filter(p => {
     const q = productSearch.toLowerCase();
-    return !q || p.name?.toLowerCase().includes(q) || p.barcode?.includes(q) || p.brand?.toLowerCase().includes(q);
-  }).slice(0,40);
+    if (q && !p.name?.toLowerCase().includes(q) && !p.barcode?.includes(q) && !p.brand?.toLowerCase().includes(q)) return false;
+    if (prodFilterBrand !== "Brand" && p.brand !== prodFilterBrand) return false;
+    if (prodFilterCat   !== "Category" && p.category !== prodFilterCat) return false;
+    return true;
+  }).sort((a,b) => {
+    if (prodSortKey==="stock_asc")  return (a.stock||0)-(b.stock||0);
+    if (prodSortKey==="stock_desc") return (b.stock||0)-(a.stock||0);
+    if (prodSortKey==="price_asc")  return (a.wholesale_price||0)-(b.wholesale_price||0);
+    if (prodSortKey==="price_desc") return (b.wholesale_price||0)-(a.wholesale_price||0);
+    return (a.name||"").localeCompare(b.name||"");
+  });
 
   const addProduct = (p) => {
     if (items.find(i=>i.product_id===p.id)) return;
     setItems(prev=>[...prev,{product_id:p.id,name:p.name,barcode:p.barcode||"",sku:p.sku||"",unit_price:p.wholesale_price||0,qty:1,stock:p.stock}]);
-    setProductSearch("");
   };
   const removeItem = (pid) => setItems(prev=>prev.filter(i=>i.product_id!==pid));
   const updateItem = (pid, field, val) => setItems(prev=>prev.map(i=>i.product_id===pid?{...i,[field]:field==="qty"||field==="unit_price"?Number(val)||0:val}:i));
@@ -3071,50 +3199,96 @@ function AdminCreateOrderModal({ customers, products, orders, setOrders, setting
           </div>
         </div>
 
-        {/* RIGHT: Product search + items */}
-        <div>
+        {/* RIGHT: Product picker + items */}
+        <div style={{display:"flex",flexDirection:"column",minHeight:0}}>
           <div style={{fontWeight:700,fontSize:13,marginBottom:10,color:"var(--text2)",textTransform:"uppercase",letterSpacing:1}}>Products</div>
-          <div style={{position:"relative",marginBottom:12}}>
-            <div className="search-wrap"><span className="search-icon">🔍</span>
-              <input value={productSearch} onChange={e=>setProductSearch(e.target.value)} placeholder="Search products to add…"/>
+
+          {/* Filters row */}
+          <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+            <div className="search-wrap" style={{flex:2,minWidth:120}}>
+              <span className="search-icon">🔍</span>
+              <input value={productSearch} onChange={e=>setProductSearch(e.target.value)} placeholder="Search…"/>
             </div>
-            {productSearch&&(
-              <div style={{position:"absolute",zIndex:200,left:0,right:0,top:"100%",background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,maxHeight:220,overflowY:"auto",boxShadow:"0 4px 16px rgba(0,0,0,.15)"}}>
-                {searchedProducts.length===0?<div style={{padding:"10px 14px",color:"var(--text3)",fontSize:13}}>No products found</div>:
-                  searchedProducts.map(p=>(
-                    <div key={p.id} onClick={()=>addProduct(p)}
-                      style={{padding:"8px 14px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid var(--border)",fontSize:13}}
-                      onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"}
-                      onMouseLeave={e=>e.currentTarget.style.background=""}>
-                      <span>{p.name} {p.barcode?<code style={{fontSize:10,color:"var(--text3)"}}>({p.barcode})</code>:""}</span>
-                      <span style={{color:"var(--accent)",fontWeight:600,fontSize:12}}>{fmt(p.wholesale_price)}</span>
-                    </div>
-                  ))
-                }
-              </div>
-            )}
+            <select value={prodFilterBrand} onChange={e=>setProdFilterBrand(e.target.value)} style={{padding:"5px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:12}}>
+              {prodBrands.map(b=><option key={b}>{b}</option>)}
+            </select>
+            <select value={prodFilterCat} onChange={e=>setProdFilterCat(e.target.value)} style={{padding:"5px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:12}}>
+              {prodCats.map(c=><option key={c}>{c}</option>)}
+            </select>
+            <select value={prodSortKey} onChange={e=>setProdSortKey(e.target.value)} style={{padding:"5px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:12}}>
+              <option value="name">A–Z</option>
+              <option value="stock_desc">Stock ↓</option>
+              <option value="stock_asc">Stock ↑</option>
+              <option value="price_asc">Price ↑</option>
+              <option value="price_desc">Price ↓</option>
+            </select>
           </div>
 
-          {items.length===0?(
-            <div style={{textAlign:"center",color:"var(--text3)",padding:"24px 0",fontSize:13}}>Search and add products above</div>
-          ):(
-            <div className="tbl-wrap" style={{maxHeight:280,overflowY:"auto",marginBottom:12}}>
-              <table>
-                <thead><tr><th>Product</th><th style={{textAlign:"right"}}>Price</th><th style={{textAlign:"center"}}>Qty</th><th></th></tr></thead>
-                <tbody>{items.map(i=>(
-                  <tr key={i.product_id}>
-                    <td style={{fontSize:12}}>{i.name.slice(0,28)}{i.name.length>28?"…":""}</td>
-                    <td style={{textAlign:"right"}}>{isConsignment?<span style={{fontSize:11,color:"var(--text3)"}}>—</span>:<input type="number" value={i.unit_price} onChange={e=>updateItem(i.product_id,"unit_price",e.target.value)} style={{width:80,textAlign:"right"}}/>}</td>
-                    <td style={{textAlign:"center"}}><input type="number" min={1} value={i.qty} onChange={e=>updateItem(i.product_id,"qty",e.target.value)} style={{width:55,textAlign:"center"}}/></td>
-                    <td><button className="btn btn-danger btn-xs" onClick={()=>removeItem(i.product_id)}>✕</button></td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-          )}
+          {/* Scrollable product list */}
+          <div style={{border:"1px solid var(--border)",borderRadius:8,overflowY:"auto",maxHeight:200,marginBottom:10,background:"var(--bg)"}}>
+            {searchedProducts.length===0
+              ? <div style={{padding:"14px",textAlign:"center",color:"var(--text3)",fontSize:13}}>No products match filters</div>
+              : searchedProducts.map(p=>{
+                  const alreadyAdded = !!items.find(i=>i.product_id===p.id);
+                  const stockColor = p.stock===0?"var(--danger)":p.stock<=5?"var(--warn)":"var(--success)";
+                  return (
+                    <div key={p.id}
+                      onClick={()=>!alreadyAdded&&addProduct(p)}
+                      style={{display:"grid",gridTemplateColumns:"1fr auto auto",alignItems:"center",gap:8,padding:"7px 12px",borderBottom:"1px solid var(--border)",cursor:alreadyAdded?"default":"pointer",opacity:alreadyAdded?0.45:1,fontSize:13,background:alreadyAdded?"var(--bg2)":"transparent"}}
+                      onMouseEnter={e=>{if(!alreadyAdded)e.currentTarget.style.background="var(--bg3)"}}
+                      onMouseLeave={e=>{if(!alreadyAdded)e.currentTarget.style.background="transparent"}}>
+                      <div>
+                        <div style={{fontWeight:500,lineHeight:1.3}}>{p.name}</div>
+                        <div style={{fontSize:10,color:"var(--text3)"}}>{p.brand||""}{p.barcode?" · "+p.barcode:""}</div>
+                      </div>
+                      <div style={{textAlign:"right",minWidth:54}}>
+                        <div style={{fontWeight:600,fontSize:12,color:stockColor}}>{p.stock??0}</div>
+                        <div style={{fontSize:9,color:"var(--text3)"}}>in stock</div>
+                      </div>
+                      <div style={{minWidth:60,textAlign:"right"}}>
+                        {alreadyAdded
+                          ? <span style={{fontSize:10,color:"var(--success)",fontWeight:600}}>✓ Added</span>
+                          : <span style={{fontSize:11,color:"var(--accent)",fontWeight:600}}>{fmt(p.wholesale_price)}</span>}
+                      </div>
+                    </div>
+                  );
+                })
+            }
+          </div>
+
+          {/* Items already added */}
+          {items.length===0
+            ? <div style={{textAlign:"center",color:"var(--text3)",padding:"12px 0",fontSize:12}}>Click a product above to add it</div>
+            : <div className="tbl-wrap" style={{maxHeight:200,overflowY:"auto",marginBottom:10}}>
+                <table>
+                  <thead><tr>
+                    <th>Product</th>
+                    <th style={{textAlign:"center"}}>Stock</th>
+                    {!isConsignment&&<th style={{textAlign:"right"}}>Price</th>}
+                    <th style={{textAlign:"center"}}>Qty</th>
+                    <th></th>
+                  </tr></thead>
+                  <tbody>{items.map(i=>{
+                    const stockColor = i.stock===0?"var(--danger)":i.stock<=5?"var(--warn)":"var(--success)";
+                    return (
+                      <tr key={i.product_id}>
+                        <td style={{fontSize:12}}>
+                          <div style={{fontWeight:500}}>{i.name.slice(0,26)}{i.name.length>26?"…":""}</div>
+                          {i.barcode&&<div style={{fontSize:10,color:"var(--text3)"}}>{i.barcode}</div>}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:600,fontSize:12,color:stockColor}}>{i.stock??0}</td>
+                        {!isConsignment&&<td style={{textAlign:"right"}}><input type="number" value={i.unit_price} onChange={e=>updateItem(i.product_id,"unit_price",e.target.value)} style={{width:72,textAlign:"right"}}/></td>}
+                        <td style={{textAlign:"center"}}><input type="number" min={1} value={i.qty} onChange={e=>updateItem(i.product_id,"qty",e.target.value)} style={{width:52,textAlign:"center"}}/></td>
+                        <td><button className="btn btn-danger btn-xs" onClick={()=>removeItem(i.product_id)}>✕</button></td>
+                      </tr>
+                    );
+                  })}</tbody>
+                </table>
+              </div>
+          }
 
           {items.length>0&&!isConsignment&&(
-            <div style={{background:"var(--bg3)",borderRadius:8,padding:"12px 14px",fontSize:13}}>
+            <div style={{background:"var(--bg3)",borderRadius:8,padding:"10px 14px",fontSize:13,marginTop:"auto"}}>
               <div style={{display:"flex",justifyContent:"space-between"}}><span>Subtotal</span><span>{fmt(subtotal)}</span></div>
               {taxRate>0&&<div style={{display:"flex",justifyContent:"space-between",color:"var(--text2)"}}><span>GCT ({taxRate}%)</span><span>{fmt(taxAmt)}</span></div>}
               <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,marginTop:6,fontSize:15,color:"var(--accent)"}}><span>Total</span><span>{fmt(total)}</span></div>
@@ -3262,7 +3436,7 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
           customer_id: order.customer_id,
           customer_name: order.customer_name,
           date: today(),
-          status: "invoiced",
+          status: (order.type==="consignment") ? "delivery_note" : "invoiced",
           type: order.type||"standard",
           payment_method: order.payment_method||"",
           tax_rate: taxRate,
@@ -3281,7 +3455,8 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
         }
 
         // Update original order status
-        const newOrderStatus = fullyComplete ? "invoiced" : "partial_shipped";
+        const completedStatus = (order.type==="consignment") ? "delivery_note" : "invoiced";
+        const newOrderStatus = fullyComplete ? completedStatus : "partial_shipped";
         await supabase.from("orders").update({ status: newOrderStatus }).eq("id", order.id);
         setOrders(prev => prev.map(o => o.id === order.id ? {...o, status: newOrderStatus} : o));
 
@@ -3501,13 +3676,24 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("open");
   const [shipModal, setShipModal] = useState(null);
+  const [showEmailModal, setShowEmailModal] = useState(null);
+  const [cancelBOModal, setCancelBOModal] = useState(null);
 
-  const filterBOs = (status) => useMemo(() => backorders.filter(b => {
-    if (b.status !== status) return false;
-    const q = search.toLowerCase();
-    if (q && !b.order_id?.toLowerCase().includes(q) && !b.product_name?.toLowerCase().includes(q)) return false;
-    return true;
-  }), [backorders, search, tab]);
+  const cancelBackorder = async (b, reason) => {
+    const note = reason ? `Cancelled: ${reason}` : undefined;
+    await supabase.from("backorders").update({status:"cancelled",...(note?{notes:note}:{})}).eq("id",b.id);
+    setBackorders(prev=>prev.map(x=>x.id===b.id?{...x,status:"cancelled",...(note?{notes:note}:{})}:x));
+    const remaining = backorders.filter(x=>x.order_id===b.order_id&&x.id!==b.id&&x.status==="open");
+    if(remaining.length===0){
+      const parentOrder = orders.find(o=>o.id===b.order_id);
+      const completedStatus = (parentOrder?.type==="consignment") ? "delivery_note" : "invoiced";
+      await supabase.from("orders").update({status:completedStatus}).eq("id",b.order_id);
+      setOrders(prev=>prev.map(o=>o.id===b.order_id?{...o,status:completedStatus}:o));
+    }
+    try{await supabase.from("activity_log").insert({action:"order_status",details:`Backorder cancelled for ${b.product_name} on order ${b.order_id}${reason?": "+reason:""}`,entity_type:"order",entity_id:b.order_id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){}
+    showToast("Backorder cancelled");
+    setCancelBOModal(null);
+  };
 
   const openBackorders = useMemo(() => backorders.filter(b => {
     if (b.status !== "open") return false;
@@ -3522,20 +3708,6 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
     if (q && !b.order_id?.toLowerCase().includes(q) && !b.product_name?.toLowerCase().includes(q)) return false;
     return true;
   }), [backorders, search]);
-
-  const cancelBackorder = async (b) => {
-    if(!window.confirm(`Cancel backorder for "${b.product_name}" (${b.qty_remaining} remaining)? This cannot be undone.`)) return;
-    await supabase.from("backorders").update({status:"cancelled"}).eq("id",b.id);
-    setBackorders(prev=>prev.map(x=>x.id===b.id?{...x,status:"cancelled"}:x));
-    // Check if all backorders for this order are now cancelled/fulfilled
-    const remaining = backorders.filter(x=>x.order_id===b.order_id&&x.id!==b.id&&x.status==="open");
-    if(remaining.length===0){
-      await supabase.from("orders").update({status:"invoiced"}).eq("id",b.order_id);
-      setOrders(prev=>prev.map(o=>o.id===b.order_id?{...o,status:"invoiced"}:o));
-    }
-    try{await supabase.from("activity_log").insert({action:"order_status",details:`Backorder cancelled for ${b.product_name} on order ${b.order_id}`,entity_type:"order",entity_id:b.order_id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){}
-    showToast("Backorder cancelled");
-  };
 
   // Group by order_id
   const grouped = useMemo(() => {
@@ -3594,6 +3766,7 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                   const isCons = cust?.customer_type==="consignment" || order?.type==="consignment";
                   printBackorderStatement(orderId,enriched,order,settings,isCons);
                 }}>🖨 Backorder Statement</button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setShowEmailModal(order)}>📧 Email</button>
                 <StatusBadge status={order?.status||"partial_shipped"}/>
               </div>
             </div>
@@ -3616,7 +3789,7 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                       <td>
                         <div className="tbl-actions">
                           <button className="btn btn-primary btn-xs" onClick={()=>setShipModal({order, backorderRecord: b})}>🚚 Ship</button>
-                          <button className="btn btn-warn btn-xs" onClick={()=>cancelBackorder(b)}>✕ Cancel</button>
+                          <button className="btn btn-warn btn-xs" onClick={()=>setCancelBOModal(b)}>✕ Cancel</button>
                         </div>
                       </td>
                     </tr>
@@ -3683,119 +3856,276 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
           onClose={()=>setShipModal(null)}
         />
       )}
+      {showEmailModal&&<OrderEmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
+      {cancelBOModal&&<CancelReasonModal title="Cancel Backorder" itemLabel={`${cancelBOModal.product_name} (${cancelBOModal.qty_remaining} remaining) — Order ${cancelBOModal.order_id}`} onConfirm={r=>cancelBackorder(cancelBOModal,r)} onClose={()=>setCancelBOModal(null)}/>}
     </>
   );
 }
 
 
+// ─── APPLY PAYMENT MODAL ─────────────────────────────────────────────────────
+function ApplyPaymentModal({ order, onSave, onClose }) {
+  const METHODS = [
+    "BNS Bank Transfer",
+    "NCB Bank Transfer",
+    "Sagicor Bank Transfer",
+    "Cash",
+    "Cheque",
+    "Fygaro",
+    "Other",
+  ];
+  const [method, setMethod] = useState(() => {
+    // Pre-select if order already has a method that matches our list
+    return METHODS.includes(order.payment_method) ? order.payment_method : "BNS Bank Transfer";
+  });
+  const [chequeBank, setChequeBank]     = useState("");
+  const [chequeNum,  setChequeNum]      = useState("");
+  const [otherDesc,  setOtherDesc]      = useState("");
+  const [ref,        setRef]            = useState("");
+  const [busy,       setBusy]           = useState(false);
+
+  const isCheque = method === "Cheque";
+  const isOther  = method === "Other";
+
+  const buildLabel = () => {
+    if (isCheque) {
+      const parts = [];
+      if (chequeBank) parts.push(chequeBank);
+      if (chequeNum)  parts.push(`#${chequeNum}`);
+      return `Cheque${parts.length ? " — " + parts.join(" / ") : ""}`;
+    }
+    if (isOther) return otherDesc.trim() || "Other";
+    return method;
+  };
+
+  const canSave = !isOther || otherDesc.trim().length > 0;
+
+  return (
+    <div className="overlay" style={{zIndex:9999}}><div className="modal" style={{maxWidth:440}}>
+      <div className="modal-head">
+        <h2>✓ Apply Payment</h2>
+        <button className="xbtn" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div style={{padding:"10px 14px",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:8,fontSize:13,marginBottom:16}}>
+          <div style={{fontWeight:700}}>{order.customer_name}</div>
+          <div style={{color:"var(--text2)",marginTop:2}}>Invoice {order.id} · <strong style={{color:"var(--accent)"}}>{fmt(order.total)}</strong></div>
+        </div>
+
+        <div className="form-group">
+          <label>Payment Method Received</label>
+          <select value={method} onChange={e=>setMethod(e.target.value)}>
+            {METHODS.map(m=><option key={m}>{m}</option>)}
+          </select>
+        </div>
+
+        {isCheque && (
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div className="form-group" style={{margin:0}}>
+              <label>Bank Cheque Is From</label>
+              <input value={chequeBank} onChange={e=>setChequeBank(e.target.value)} placeholder="e.g. NCB, Scotiabank…"/>
+            </div>
+            <div className="form-group" style={{margin:0}}>
+              <label>Cheque Number</label>
+              <input value={chequeNum} onChange={e=>setChequeNum(e.target.value)} placeholder="e.g. 001234"/>
+            </div>
+          </div>
+        )}
+
+        {isOther && (
+          <div className="form-group">
+            <label>Describe Payment Method <span style={{color:"var(--danger)"}}>*</span></label>
+            <input value={otherDesc} onChange={e=>setOtherDesc(e.target.value)} placeholder="e.g. WiPay, Wire transfer…"/>
+          </div>
+        )}
+
+        <div className="form-group">
+          <label>Additional Reference <span style={{color:"var(--text3)",fontWeight:400}}>(optional)</span></label>
+          <input value={ref} onChange={e=>setRef(e.target.value)} placeholder="Transaction ID, confirmation #…"/>
+        </div>
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" disabled={busy||!canSave} onClick={async()=>{
+          setBusy(true);
+          await onSave(buildLabel(), ref);
+          setBusy(false);
+        }}>
+          {busy ? "Saving…" : "✓ Mark as Paid"}
+        </button>
+      </div>
+    </div></div>
+  );
+}
+
 function InvoicesPage({ orders, setOrders, customers, settings, showToast, setModal, setProducts, products }) {
-  const [search,setSearch]=useState("");
-  const [filterStatus,setFilterStatus]=useState("all");
-  const [filterDate,setFilterDate]=useState("");
-  const [showEmailModal,setShowEmailModal]=useState(null);
-  const [showRefund,setShowRefund]=useState(null);
+  const [search,       setSearch]       = useState("");
+  const [filterTab,    setFilterTab]    = useState("all");
+  const [filterDate,   setFilterDate]   = useState("");
+  const [showEmailModal,setShowEmailModal] = useState(null);
+  const [showRefund,   setShowRefund]   = useState(null);
+  const [payModal,     setPayModal]     = useState(null);
 
-  const filtered=useMemo(()=>orders.filter(o=>{
-    const invoiceStatuses=["invoiced","paid","delivered","cancelled","refunded","partial_refund"];
-    if(!invoiceStatuses.includes(o.status))return false;
-    if(filterStatus!=="all"&&o.status!==filterStatus)return false;
-    if(filterDate&&!o.date?.startsWith(filterDate))return false;
-    const q=search.toLowerCase();
-    if(q&&!o.id.toLowerCase().includes(q)&&!o.customer_name?.toLowerCase().includes(q))return false;
-    return true;
-  }),[orders,search,filterStatus,filterDate]);
+  // Helper: is this order a consignment order?
+  const isCons = (o) => o.type==="consignment" || customers.find(c=>c.id===o.customer_id)?.customer_type==="consignment";
 
-  const {sorted,key,dir,toggle}=useSort(filtered,"created_at","desc");
-  const pg=usePagination(sorted,20);
+  const ALL_INVOICE_STATUSES = ["invoiced","delivery_note","paid","delivered","cancelled","refunded","partial_refund"];
 
-  const updateStatus=async(id,status)=>{
+  const filtered = useMemo(() => {
+    return orders.filter(o => {
+      if (!ALL_INVOICE_STATUSES.includes(o.status)) return false;
+      // Tab filter
+      if (filterTab==="delivery")  { if (!isCons(o)) return false; }
+      else if (filterTab==="awaiting") { if (isCons(o) || o.status!=="invoiced") return false; }
+      else if (filterTab==="paid")     { if (isCons(o) || (o.status!=="paid"&&o.status!=="delivered")) return false; }
+      else if (filterTab==="refunded") { if (o.status!=="refunded"&&o.status!=="partial_refund") return false; }
+      // Date filter
+      if (filterDate && !o.date?.startsWith(filterDate)) return false;
+      // Search
+      const q = search.toLowerCase();
+      if (q && !o.id.toLowerCase().includes(q) && !o.customer_name?.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [orders, search, filterTab, filterDate, customers]);
+
+  const {sorted,key,dir,toggle} = useSort(filtered,"created_at","desc");
+  const pg = usePagination(sorted,20);
+
+  // Tab badge counts (from full orders list, no date/search filter)
+  const countDelivery  = useMemo(()=>orders.filter(o=>ALL_INVOICE_STATUSES.includes(o.status)&&isCons(o)).length,[orders,customers]);
+  const countAwaiting  = useMemo(()=>orders.filter(o=>!isCons(o)&&o.status==="invoiced").length,[orders,customers]);
+  const countPaid      = useMemo(()=>orders.filter(o=>!isCons(o)&&(o.status==="paid"||o.status==="delivered")).length,[orders,customers]);
+  const countRefunded  = useMemo(()=>orders.filter(o=>o.status==="refunded"||o.status==="partial_refund").length,[orders]);
+
+  const applyPayment = async (order, method, ref) => {
+    const addNote = ref ? (order.notes ? order.notes+"\n"+ref : ref) : order.notes;
+    const update = {status:"paid", payment_method:method, ...(addNote?{notes:addNote}:{})};
+    const {error} = await supabase.from("orders").update(update).eq("id",order.id);
+    if (error) { showToast("Failed: "+error.message,"err"); return; }
+    setOrders(p=>p.map(o=>o.id===order.id?{...o,...update}:o));
+    try { await supabase.from("activity_log").insert({action:"order_status",details:`Payment applied to ${order.id} via ${method}${ref?": "+ref:""}`,entity_type:"order",entity_id:order.id,user_name:currentUserName,timestamp:new Date().toISOString()}); } catch(e){}
+    showToast(`${order.id} marked as Paid ✓`);
+    setPayModal(null);
+  };
+
+  const updateStatus = async (id,status) => {
     const order = orders.find(o=>o.id===id);
-    // Deduct stock when admin marks as shipped (only once)
-    if(status==="shipped" && order?.status!=="shipped" && order?.status!=="delivered") {
-      for(const item of (order?.items||[])) {
+    if (status==="shipped"&&order?.status!=="shipped"&&order?.status!=="delivered") {
+      for (const item of (order?.items||[])) {
         const {data:prod} = await supabase.from("products").select("stock").eq("id",item.product_id).single();
-        if(prod) {
-          const newStock = Math.max(0, prod.stock - item.qty);
-          await supabase.from("products").update({stock:newStock}).eq("id",item.product_id);
-          setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:newStock}:p));
+        if (prod) {
+          const ns = Math.max(0,prod.stock-item.qty);
+          await supabase.from("products").update({stock:ns}).eq("id",item.product_id);
+          setProducts(prev=>prev.map(p=>p.id===item.product_id?{...p,stock:ns}:p));
         }
       }
       showToast("Order shipped — inventory deducted");
     }
     await supabase.from("orders").update({status}).eq("id",id);
     setOrders(p=>p.map(o=>o.id===id?{...o,status}:o));
-    if(status!=="shipped") showToast("Status updated");
+    if (status!=="shipped") showToast("Status updated");
   };
 
-  const exportCSV=()=>{
-    const rows=[["Invoice","Customer","Date","Status","Payment","Subtotal","Tax","Total"],...filtered.map(o=>[o.id,o.customer_name,o.date,o.status,o.payment_method||"—",o.subtotal,o.tax_amount,o.total])];
-    downloadCSV(rows,`invoices_${today()}.csv`); showToast("Exported");
+  const exportCSV = () => {
+    const rows = [
+      ["Ref","Customer","Date","Doc Type","Status","Payment Method","Subtotal","Tax","Total"],
+      ...filtered.map(o=>[o.id,o.customer_name,o.date,isCons(o)?"Delivery Note":"Invoice",o.status,o.payment_method||"—",o.subtotal||0,o.tax_amount||0,o.total||0])
+    ];
+    downloadCSV(rows,`invoices_${today()}.csv`);
+    showToast("Exported");
   };
+
+  const TABS = [
+    {k:"all",       label:"All"},
+    {k:"delivery",  label:"📦 Delivery Notes", count:countDelivery},
+    {k:"awaiting",  label:"🧾 Awaiting Payment", count:countAwaiting, warn:true},
+    {k:"paid",      label:"✓ Paid", count:countPaid},
+    {k:"refunded",  label:"↩ Refunded", count:countRefunded},
+  ];
 
   return (
     <>
-      <div className="filter-bar">
-        <div className="search-wrap" style={{flex:2}}>
-          <span className="search-icon">🔍</span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by invoice # or customer name…"/>
+      {/* Tab bar + controls row */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+        <div className="tabs" style={{margin:0,flexWrap:"wrap",flex:"1 1 auto"}}>
+          {TABS.map(t=>(
+            <button key={t.k} className={`tab ${filterTab===t.k?"active":""}`} onClick={()=>setFilterTab(t.k)}>
+              {t.label}
+              {t.count>0&&<span className={`badge ${t.warn?"bo":"bb"}`} style={{fontSize:9,marginLeft:4,verticalAlign:"middle"}}>{t.count}</span>}
+            </button>
+          ))}
         </div>
-        <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={{width:"auto"}}>
-          <option value="all">All</option>
-          {["invoiced","paid","delivered","refunded","partial_refund"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
-        </select>
-        <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
-        <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
-        <button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ Export CSV</button>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+          <div className="search-wrap" style={{minWidth:190}}>
+            <span className="search-icon">🔍</span>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search…"/>
+          </div>
+          <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
+          <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
+          <button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ CSV</button>
+        </div>
       </div>
 
       <div className="card">
         <div className="tbl-wrap">
           <table>
             <thead><tr>
-              <SortTh label="Invoice" sortKey="id" current={key} dir={dir} onToggle={toggle}/>
-              <SortTh label="Customer" sortKey="customer_name" current={key} dir={dir} onToggle={toggle}/>
-              <SortTh label="Date" sortKey="date" current={key} dir={dir} onToggle={toggle}/>
-              <SortTh label="Created" sortKey="created_at" current={key} dir={dir} onToggle={toggle}/>
-              <th>Type</th>
+              <SortTh label="Ref #"     sortKey="id"            current={key} dir={dir} onToggle={toggle}/>
+              <SortTh label="Customer"  sortKey="customer_name" current={key} dir={dir} onToggle={toggle}/>
+              <SortTh label="Date"      sortKey="date"          current={key} dir={dir} onToggle={toggle}/>
+              <th>Doc Type</th>
               <th>Payment</th>
-              <SortTh label="Total" sortKey="total" current={key} dir={dir} onToggle={toggle}/>
+              <SortTh label="Amount"    sortKey="total"         current={key} dir={dir} onToggle={toggle}/>
               <th>Status</th>
               <th>Actions</th>
             </tr></thead>
-            <tbody>{pg.sliced.map(o=>(
-              <tr key={o.id}>
-                <td><code>{o.id}</code></td>
-                <td style={{fontWeight:500}}>{o.customer_name}</td>
-                <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
-                <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
-                <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
-                <td style={{fontWeight:600,color:"var(--accent)"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
-                    {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
-                    {o.status==="refunded"&&<span className="badge br" style={{fontSize:9}}>↩ Refunded</span>}
-                    {o.status==="partial_refund"&&<span className="badge bo" style={{fontSize:9}}>↩ Part. Refund</span>}
-                  </div>
-                </td>
-                <td><div className="tbl-actions">
-                  <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>View</button>
-                  <button className="btn btn-ghost btn-xs" onClick={()=>{ const c=customers.find(x=>x.id===o.customer_id); printInvoice(o,c,settings,c?.customer_type==="consignment"||o.type==="consignment"); }}>Print</button>
-                  <button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>
-                  {(o.status==="invoiced"||o.status==="shipped"||o.status==="delivered"||o.status==="paid")&&<button className="btn btn-warn btn-xs" onClick={()=>setShowRefund(o)}>↩ Refund</button>}
-                </div></td>
-              </tr>
-            ))}
-            {pg.sliced.length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No invoices found.</td></tr>}
+            <tbody>{pg.sliced.map(o => {
+              const cons = isCons(o);
+              return (
+                <tr key={o.id}>
+                  <td><code>{o.id}</code></td>
+                  <td style={{fontWeight:500}}>{o.customer_name}</td>
+                  <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
+                  <td>
+                    {cons
+                      ? <span className="badge bb" style={{fontSize:10}}>📦 Delivery Note</span>
+                      : <span className="badge bb" style={{fontSize:10}}>🧾 Invoice</span>}
+                  </td>
+                  <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
+                  <td style={{fontWeight:600,color:"var(--accent)"}}>
+                    {cons
+                      ? <span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>
+                      : <span>{fmt(o.total)}</span>}
+                  </td>
+                  <td><StatusBadge status={o.status}/></td>
+                  <td><div className="tbl-actions">
+                    <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>{cons?"📦 View":"🧾 View"}</button>
+                    <button className="btn btn-ghost btn-xs" onClick={()=>{ const c=customers.find(x=>x.id===o.customer_id); printInvoice(o,c,settings,cons); }}>🖨</button>
+                    <button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>
+                    {!cons && o.status==="invoiced" &&
+                      <button className="btn btn-primary btn-xs" onClick={()=>setPayModal(o)}>✓ Apply Payment</button>}
+                    {(o.status==="invoiced"||o.status==="delivery_note"||o.status==="paid"||o.status==="delivered") &&
+                      <button className="btn btn-warn btn-xs" onClick={()=>setShowRefund(o)}>↩ Refund</button>}
+                  </div></td>
+                </tr>
+              );
+            })}
+            {pg.sliced.length===0&&<tr><td colSpan={8} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No records found.</td></tr>}
             </tbody>
           </table>
         </div>
         <div style={{padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"1px solid var(--border)"}}>
-          <span style={{fontSize:12,color:"var(--text3)"}}>{pg.total} invoice{pg.total!==1?"s":""} · Total: {fmt(filtered.filter(o=>o.type!=="consignment").reduce((s,o)=>s+o.total,0))}</span>
+          <span style={{fontSize:12,color:"var(--text3)"}}>
+            {pg.total} record{pg.total!==1?"s":""}{" · "}
+            Upfront total: {fmt(filtered.filter(o=>!isCons(o)&&o.status!=="refunded").reduce((s,o)=>s+(o.total||0),0))}
+          </span>
           <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage}/>
         </div>
       </div>
 
       {showEmailModal&&<EmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
       {showRefund&&<RefundModal order={showRefund} onClose={()=>setShowRefund(null)} showToast={showToast} setOrders={setOrders} setProducts={setProducts} products={products}/>}
+      {payModal&&<ApplyPaymentModal order={payModal} onSave={(m,r)=>applyPayment(payModal,m,r)} onClose={()=>setPayModal(null)}/>}
     </>
   );
 }
@@ -3808,8 +4138,8 @@ function InvoicesPage({ orders, setOrders, customers, settings, showToast, setMo
 // ─────────────────────────────────────────────────────────────────────────────
 function AdminClearancePage({ products, setProducts, settings, showToast }) {
   const [search, setSearch] = useState("");
-  const [filterBrand, setFilterBrand] = useState("All");
-  const [filterCat, setFilterCat] = useState("All");
+  const [filterBrand, setFilterBrand] = useState("Brand");
+  const [filterCat, setFilterCat] = useState("Category");
   const [sortBy, setSortBy] = useState("name");
   const [busy, setBusy] = useState(null);
   const [editingPrice, setEditingPrice] = useState(null); // product id being edited
@@ -3817,13 +4147,13 @@ function AdminClearancePage({ products, setProducts, settings, showToast }) {
 
   const active = products.filter(p => p.active);
   const clearanceItems = active.filter(p => p.is_clearance);
-  const allBrands = ["All", ...[...new Set(active.map(p=>p.brand).filter(Boolean))].sort()];
-  const allCats = ["All", ...[...new Set(active.map(p=>p.category).filter(Boolean))].sort()];
+  const allBrands = ["Brand", ...[...new Set(active.map(p=>p.brand).filter(Boolean))].sort()];
+  const allCats = ["Category", ...[...new Set(active.map(p=>p.category).filter(Boolean))].sort()];
 
   const eligible = active.filter(p => !p.is_clearance).filter(p => {
     const q = search.toLowerCase();
-    if (filterBrand !== "All" && p.brand !== filterBrand) return false;
-    if (filterCat !== "All" && p.category !== filterCat) return false;
+    if (filterBrand !== "Brand" && p.brand !== filterBrand) return false;
+    if (filterCat !== "Category" && p.category !== filterCat) return false;
     if (q && !p.name?.toLowerCase().includes(q) && !p.barcode?.includes(q) && !p.brand?.toLowerCase().includes(q)) return false;
     return true;
   }).sort((a,b) => {
@@ -3955,7 +4285,7 @@ function AdminClearancePage({ products, setProducts, settings, showToast }) {
         </div>
         {eligible.length === 0
           ? <div style={{padding:"24px",textAlign:"center",color:"var(--text3)"}}>
-              {search||filterBrand!=="All"||filterCat!=="All" ? "No products match your filters." : "All active products are already in Clearance."}
+              {search||filterBrand!=="Brand"||filterCat!=="Category" ? "No products match your filters." : "All active products are already in Clearance."}
             </div>
           : <div className="tbl-wrap">
               <table>
@@ -4088,21 +4418,21 @@ function ClearancePage({ products, isAdmin, addToCart, user, cart }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function AdminHotSellersPage({ products, setProducts, settings, showToast }) {
   const [search, setSearch] = useState("");
-  const [filterBrand, setFilterBrand] = useState("All");
-  const [filterCat, setFilterCat] = useState("All");
+  const [filterBrand, setFilterBrand] = useState("Brand");
+  const [filterCat, setFilterCat] = useState("Category");
   const [sortBy, setSortBy] = useState("name");
   const [busy, setBusy] = useState(null);
 
   const active = products.filter(p => p.active);
   const hotItems = active.filter(p => p.is_hot_seller);
-  const allBrands = ["All", ...[...new Set(active.map(p=>p.brand).filter(Boolean))].sort()];
-  const allCats = ["All", ...[...new Set(active.map(p=>p.category).filter(Boolean))].sort()];
+  const allBrands = ["Brand", ...[...new Set(active.map(p=>p.brand).filter(Boolean))].sort()];
+  const allCats = ["Category", ...[...new Set(active.map(p=>p.category).filter(Boolean))].sort()];
 
   // All products tab (for adding)
   const eligible = active.filter(p => !p.is_hot_seller).filter(p => {
     const q = search.toLowerCase();
-    if (filterBrand !== "All" && p.brand !== filterBrand) return false;
-    if (filterCat !== "All" && p.category !== filterCat) return false;
+    if (filterBrand !== "Brand" && p.brand !== filterBrand) return false;
+    if (filterCat !== "Category" && p.category !== filterCat) return false;
     if (q && !p.name?.toLowerCase().includes(q) && !p.barcode?.includes(q) && !p.brand?.toLowerCase().includes(q)) return false;
     return true;
   }).sort((a,b) => {
@@ -4207,7 +4537,7 @@ function AdminHotSellersPage({ products, setProducts, settings, showToast }) {
         </div>
         {eligible.length === 0
           ? <div style={{padding:"24px",textAlign:"center",color:"var(--text3)"}}>
-              {search||filterBrand!=="All"||filterCat!=="All" ? "No products match your filters." : "All active products are already in Hot Sellers."}
+              {search||filterBrand!=="Brand"||filterCat!=="Category" ? "No products match your filters." : "All active products are already in Hot Sellers."}
             </div>
           : <div className="tbl-wrap">
               <table>
@@ -4576,21 +4906,34 @@ function CustomerEditModal({ customer, onSave, onClose, salesReps }) {
 function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setProducts, suppliers, setSuppliers, settings, showToast }) {
   const [view, setView] = useState("list"); // "list" | "detail"
   const [activePO, setActivePO] = useState(null);
-  const [filter, setFilter] = useState("all");
+  const [poTab, setPoTab] = useState("open"); // "open" | "completed"
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
   const [newPOForm, setNewPOForm] = useState({ supplier_id:"", supplier_name:"", expected_date:"", lot_ref:"", shipping_cost:"", notes:"" });
 
   const statusColor = { open:"var(--accent)", received:"var(--success)", partial:"var(--warn)", cancelled:"var(--danger)" };
   const statusLabel = { open:"Open", received:"Completed", partial:"Partial", cancelled:"Cancelled" };
-  // statusLabel also available above
-  const _unused = { open:"Open", received:"Completed", partial:"Partial", cancelled:"Cancelled" };
 
-  const filtered = purchaseOrders.filter(po => {
-    if (filter !== "all" && po.status !== filter) return false;
+  const openPOs = purchaseOrders.filter(po => po.status === "open" || po.status === "partial");
+  const completedPOs = purchaseOrders.filter(po => po.status === "received" || po.status === "cancelled");
+
+  const filtered = (poTab === "open" ? openPOs : completedPOs).filter(po => {
     if (search && !po.id?.toLowerCase().includes(search.toLowerCase()) && !po.supplier_name?.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
+
+  const [cancelPOModal, setCancelPOModal] = useState(null);
+
+  const cancelPO = async (po, reason) => {
+    const note = reason ? `Cancelled: ${reason}` : undefined;
+    const update = {status:"cancelled",...(note?{notes:po.notes?po.notes+"\n"+note:note}:{})};
+    const { error } = await supabase.from("purchase_orders").update(update).eq("id", po.id);
+    if (error) { showToast("Failed to cancel: " + error.message, "err"); return; }
+    setPurchaseOrders(prev => prev.map(p => p.id === po.id ? { ...p, ...update } : p));
+    try { await supabase.from("activity_log").insert({ action:"po_cancelled", details:`PO ${po.id} cancelled (${po.supplier_name})${reason?": "+reason:""}`, entity_type:"purchase_order", entity_id:po.id, user_name:currentUserName, timestamp:new Date().toISOString() }); } catch(e) {}
+    showToast(`PO ${po.id} cancelled`);
+    setCancelPOModal(null);
+  };
 
   // Create PO header immediately — no items needed yet
   const createPO = async () => {
@@ -4661,11 +5004,6 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
           <span className="search-icon">🔍</span>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by PO # or supplier…"/>
         </div>
-        {["all","open","partial","received","cancelled"].map(f=>(
-          <button key={f} className={`btn btn-sm ${filter===f?"btn-primary":"btn-secondary"}`} onClick={()=>setFilter(f)}>
-            {f.charAt(0).toUpperCase()+f.slice(1)}
-          </button>
-        ))}
       </div>
 
       <div className="card" style={{marginBottom:16}}>
@@ -4838,6 +5176,16 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
       </div>
 
       {/* PO list */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div className="tabs" style={{margin:0}}>
+          <button className={`tab ${poTab==="open"?"active":""}`} onClick={()=>setPoTab("open")}>
+            Open / Partial {openPOs.length>0&&<span className="badge bb" style={{fontSize:9,marginLeft:4}}>{openPOs.length}</span>}
+          </button>
+          <button className={`tab ${poTab==="completed"?"active":""}`} onClick={()=>setPoTab("completed")}>
+            Completed / Cancelled {completedPOs.length>0&&<span className="badge bg" style={{fontSize:9,marginLeft:4}}>{completedPOs.length}</span>}
+          </button>
+        </div>
+      </div>
       <div className="card">
         <div className="tbl-wrap">
           <table>
@@ -4858,8 +5206,11 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
                     <td>{(po.items||[]).length}</td>
                     <td style={{fontWeight:600}}>{totalOrdered}</td>
                     <td style={{fontWeight:600,color:totalReceived===totalOrdered&&totalOrdered>0?"var(--success)":totalReceived>0?"var(--warn)":"var(--text3)"}}>{totalReceived}</td>
-                    <td><span className="badge" style={{background:`${statusColor[po.status]||"var(--accent)"}22`,color:statusColor[po.status]||"var(--accent)",fontSize:10}}>{po.status}</span></td>
-                    <td><button className="btn btn-secondary btn-xs" onClick={e=>{e.stopPropagation();openPO(po);}}>Open →</button></td>
+                    <td><span className="badge" style={{background:`${statusColor[po.status]||"var(--accent)"}22`,color:statusColor[po.status]||"var(--accent)",fontSize:10}}>{statusLabel[po.status]||po.status}</span></td>
+                    <td><div className="tbl-actions">
+                      <button className="btn btn-secondary btn-xs" onClick={e=>{e.stopPropagation();openPO(po);}}>Open →</button>
+                      {(po.status==="open"||po.status==="partial")&&<button className="btn btn-danger btn-xs" onClick={e=>{e.stopPropagation();setCancelPOModal(po);}}>✕ Cancel</button>}
+                    </div></td>
                   </tr>
                 );
               })}
@@ -4870,6 +5221,7 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
           {filtered.length} purchase orders
         </div>
       </div>
+      {cancelPOModal&&<CancelReasonModal title="Cancel Purchase Order" itemLabel={`${cancelPOModal.id} — ${cancelPOModal.supplier_name}`} onConfirm={r=>cancelPO(cancelPOModal,r)} onClose={()=>setCancelPOModal(null)}/>}
     </>
   );
 }
@@ -4879,6 +5231,7 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
 // ─────────────────────────────────────────────────────────────────────────────
 function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, showToast, onBack }) {
   const [editHeader, setEditHeader] = useState(false);
+  const [cancelPODetailModal, setCancelPODetailModal] = useState(false);
   const [hf, setHf] = useState({ supplier_name:po.supplier_name||"", supplier_id:po.supplier_id||"", expected_date:po.expected_date||"", lot_ref:po.lot_ref||"", shipping_cost:po.shipping_cost||"", notes:po.notes||"", status:po.status||"open" });
   const [savingHeader, setSavingHeader] = useState(false);
   const [productSearch, setProductSearch] = useState("");
@@ -5034,6 +5387,7 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
         <div style={{display:"flex",gap:8}}>
           {isCompleted&&<button className="btn btn-secondary btn-sm" onClick={reopenPO}>🔓 Reopen P.O.</button>}
           {!isCompleted&&po.status!=="cancelled"&&<button className="btn btn-secondary btn-sm" onClick={()=>setEditHeader(!editHeader)}>{editHeader?"✕ Cancel":"✏️ Edit Details"}</button>}
+          {!isCompleted&&po.status!=="cancelled"&&<button className="btn btn-danger btn-sm" onClick={()=>setCancelPODetailModal(true)}>✕ Cancel PO</button>}
           {!isCompleted&&po.status!=="cancelled"&&<button className="btn btn-primary btn-sm" onClick={markCompleted}>✓ Mark Completed</button>}
         </div>
       </div>
@@ -5229,6 +5583,7 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
           setShowNewProd(false);
         }}
       />}
+      {cancelPODetailModal&&<CancelReasonModal title="Cancel Purchase Order" itemLabel={`${po.id} — ${po.supplier_name}`} onConfirm={async(reason)=>{ const note=reason?`Cancelled: ${reason}`:undefined; const update={status:"cancelled",...(note?{notes:po.notes?po.notes+"\n"+note:note}:{})}; const {error}=await supabase.from("purchase_orders").update(update).eq("id",po.id); if(error){showToast("Failed: "+error.message,"err");return;} setPO({...po,...update}); try{await supabase.from("activity_log").insert({action:"po_cancelled",details:`PO ${po.id} cancelled (${po.supplier_name})${reason?": "+reason:""}`,entity_type:"purchase_order",entity_id:po.id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){} showToast(`PO ${po.id} cancelled`); setCancelPODetailModal(false); }} onClose={()=>setCancelPODetailModal(false)}/>}
     </div>
   );
 }
@@ -5783,7 +6138,7 @@ function DateRangePicker({ dateFrom, dateTo, onChange }) {
   );
 }
 
-function ActivityLogPage({ activityLog, setActivityLog }) {
+function ActivityLogPage({ activityLog, setActivityLog, products }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
@@ -5833,6 +6188,27 @@ function ActivityLogPage({ activityLog, setActivityLog }) {
         </div>
         <DateRangePicker dateFrom={dateFrom} dateTo={dateTo} onChange={(f,t)=>{setDateFrom(f);setDateTo(t);}}/>
         {(dateFrom||dateTo)&&<span style={{fontSize:12,color:"var(--text3)"}}>{filtered.length} results</span>}
+        <button className="btn btn-secondary btn-sm" style={{marginLeft:"auto"}} onClick={()=>{
+          const rows = [
+            ["Time","Action","Details","User","Entity Type","Entity"],
+            ...filtered.map(l => {
+              let entityLabel = l.entity_id||"";
+              if (l.entity_type==="product") {
+                const prod = (products||[]).find(p=>String(p.id)===String(l.entity_id));
+                entityLabel = prod ? `${prod.name}${prod.barcode?" · "+prod.barcode:""}` : (l.entity_id||"");
+              }
+              return [
+                new Date(l.timestamp).toLocaleString(),
+                l.action?.replace(/_/g," ")||"",
+                l.details||"",
+                l.user_name||"System",
+                l.entity_type||"",
+                entityLabel
+              ];
+            })
+          ];
+          downloadCSV(rows, `activity-log-${new Date().toISOString().slice(0,10)}.csv`);
+        }}>⬇ Export CSV</button>
       </div>
       <div className="card">
         <div className="card-header"><h3>🕐 Activity Log ({filtered.length} entries)</h3></div>
@@ -5848,7 +6224,15 @@ function ActivityLogPage({ activityLog, setActivityLog }) {
                   <td><span className="badge" style={{background:`${actionColors[l.action]||"var(--accent)"}22`,color:actionColors[l.action]||"var(--accent)",fontSize:10}}>{l.action?.replace(/_/g," ")}</span></td>
                   <td style={{fontSize:12,maxWidth:400}}>{l.details}</td>
                   <td style={{fontSize:12,fontWeight:500}}>{l.user_name||"System"}</td>
-                  <td style={{fontSize:11,color:"var(--text3)"}}>{l.entity_type}{l.entity_id?` · ${l.entity_id.slice(0,8)}…`:""}</td>
+                  <td style={{fontSize:11,color:"var(--text3)"}}>
+                    {l.entity_type==="product" ? (() => {
+                      const prod = (products||[]).find(p=>String(p.id)===String(l.entity_id));
+                      return prod
+                        ? <span>{prod.name}{prod.barcode&&<span style={{color:"var(--text3)",marginLeft:4,fontSize:10}}>{prod.barcode}</span>}</span>
+                        : <span>{l.entity_type}{l.entity_id?` · ${l.entity_id.slice(0,8)}…`:""}</span>;
+                    })()
+                    : <span>{l.entity_type}{l.entity_id?` · ${l.entity_id}`:""}</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -5892,7 +6276,8 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
 
   const filteredOrders = useMemo(()=>orders.filter(o=>{
     if(o.type==="consignment") return false;
-    if(o.status==="cancelled"||o.status==="order"||o.status==="partial_shipped") return false;
+    // Only count revenue once payment is applied
+    if(!["paid","delivered","refunded","partial_refund"].includes(o.status)) return false;
     if(o.date < fromDate || o.date > toDate) return false;
     if(keyword) {
       const kw=keyword.toLowerCase();
@@ -5909,6 +6294,12 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
   const totalInventoryCost=activeProducts.reduce((s,p)=>s+p.cost*p.stock,0);
   const totalInventoryRetail=activeProducts.reduce((s,p)=>s+p.retail_price*p.stock,0);
   const potentialMargin=totalInventoryRetail-totalInventoryCost;
+
+  // Awaiting payment — upfront invoiced but not yet paid (all time + in range)
+  const awaitingOrders = useMemo(()=>orders.filter(o=>o.status==="invoiced"&&o.type!=="consignment"),[orders]);
+  const awaitingTotal  = awaitingOrders.reduce((s,o)=>s+(o.total||0),0);
+  const awaitingInRange = awaitingOrders.filter(o=>o.date>=fromDate&&o.date<=toDate);
+  const awaitingInRangeTotal = awaitingInRange.reduce((s,o)=>s+(o.total||0),0);
 
   const byCust={};
   filteredOrders.forEach(o=>{ byCust[o.customer_name]=(byCust[o.customer_name]||0)+o.total; });
@@ -5959,7 +6350,7 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
         ...filteredOrders.map(o=>[o.date,o.id,o.customer_name,o.subtotal,`${o.tax_rate||0}%`,o.tax_amount,o.total])];
       filename=`tax_report_${fromDate}_${toDate}.csv`;
     } else if(type==="unpaid"){
-      const unpaid=orders.filter(o=>o.status==="invoiced"&&o.date>=fromDate&&o.date<=toDate);
+      const unpaid=orders.filter(o=>(o.status==="invoiced"||o.status==="delivery_note")&&o.date>=fromDate&&o.date<=toDate);
       rows=[["Invoice #","Customer","Date","Total","Type"],
         ...unpaid.map(o=>[o.id,o.customer_name,o.date,o.total,o.type||"standard"])];
       filename=`unpaid_invoices_${fromDate}_${toDate}.csv`;
@@ -5988,12 +6379,12 @@ function AnalyticsPage({ products, orders, customers, transfers }) {
     <div>
       {/* Summary stats */}
       <div className="stats-grid" style={{marginBottom:20}}>
-        <div className="stat c1"><div className="stat-label">Total Revenue</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalRevenue)}</div><div className="stat-sub">{filteredOrders.length} orders</div></div>
-        <div className="stat c2"><div className="stat-label">Avg Order Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(avgOrderVal)}</div></div>
-        <div className="stat c3"><div className="stat-label">Tax Collected</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalTax)}</div></div>
+        <div className="stat c1"><div className="stat-label">Revenue Collected</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalRevenue)}</div><div className="stat-sub">{filteredOrders.length} paid orders</div></div>
+        <div className="stat c2"><div className="stat-label">Avg Order Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(avgOrderVal)}</div><div className="stat-sub">paid orders in range</div></div>
+        <div className="stat c3"><div className="stat-label">GCT Collected</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalTax)}</div><div className="stat-sub">on paid orders</div></div>
+        <div className="stat c5" style={{cursor:"pointer"}} onClick={()=>{}}><div className="stat-label">⏳ Awaiting Payment</div><div className="stat-val" style={{fontSize:18,color:"var(--warn)"}}>{fmt(awaitingInRangeTotal)}</div><div className="stat-sub">{awaitingInRange.length} invoices in range · {fmt(awaitingTotal)} total outstanding</div></div>
         <div className="stat c4"><div className="stat-label">Inventory Cost</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalInventoryCost)}</div></div>
-        <div className="stat c5"><div className="stat-label">Retail Value</div><div className="stat-val" style={{fontSize:18}}>{fmt(totalInventoryRetail)}</div></div>
-        <div className="stat c6"><div className="stat-label">Potential Margin</div><div className="stat-val" style={{fontSize:18}}>{fmt(potentialMargin)}</div></div>
+        <div className="stat c6"><div className="stat-label">Potential Margin</div><div className="stat-val" style={{fontSize:18}}>{fmt(potentialMargin)}</div><div className="stat-sub">retail vs cost</div></div>
       </div>
 
       {/* Date range selector */}
@@ -6635,7 +7026,7 @@ function MyOrdersPage({ orders, settings, customers, setModal, user }) {
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               <StatusBadge status={o.status}/>
               {!isConsignment&&<div style={{fontFamily:"Syne",fontWeight:700,fontSize:17,color:"var(--accent)"}}>{fmt(o.total)}</div>}
-              <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>{o.status==="invoiced"||o.status==="paid"||o.status==="delivered" ? "View Invoice" : "View Order"}</button>
+              <button className="btn btn-secondary btn-xs" onClick={()=>setModal({type:"viewInvoice",data:o})}>{o.status==="invoiced"||o.status==="delivery_note"||o.status==="paid"||o.status==="delivered" ? (o.status==="delivery_note" ? "View Delivery Note" : "View Invoice") : "View Order"}</button>
             </div>
           </div>
           <div className="card-body">
@@ -6851,57 +7242,80 @@ function OrderSuccessModal({ order, settings, customers, onClose }) {
 // ─── INVOICE VIEW MODAL ───────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function InvoiceViewModal({ order, settings, customers, products, onClose }) {
-  const customer=customers.find(c=>c.id===order.customer_id);
+  const customer   = customers.find(c=>c.id===order.customer_id);
   const isConsignment = customer?.customer_type==="consignment" || order.type==="consignment";
-  const [hideCost, setHideCost] = useState(true); // default hidden - admin can reveal
+  const docLabel   = isConsignment ? "Delivery Note" : "Invoice";
+  const [hideCost, setHideCost] = useState(true);
 
-  const exportCSV=()=>{
-    const rows=[
-      ["Invoice",order.id],["Customer",order.customer_name],["Date",order.date],["Status",order.status],["Payment",order.payment_method||"—"],[""],
+  const exportCSV = () => {
+    const rows = [
+      [docLabel, order.id],
+      ["Customer", order.customer_name],
+      ["Date", order.date],
+      ["Status", order.status],
+      ["Payment", order.payment_method||"—"],
+      [],
       ["Product","Brand","Barcode","Qty","Unit Cost","Unit Price","Line Total"],
-      ...(order.items||[]).map(i=>{
-        const prod=(products||[]).find(p=>p.id===i.product_id);
-        return [i.name,prod?.brand||"",i.barcode||"—",i.qty,Number(prod?.cost||0),Number(i.unit_price||0),Number(((i.unit_price||0)*i.qty).toFixed(2))];
+      ...(order.items||[]).map(i => {
+        const prod = (products||[]).find(p=>p.id===i.product_id);
+        return [i.name, prod?.brand||"", i.barcode||"—", i.qty,
+                Number(prod?.cost||0), Number(i.unit_price||0),
+                Number(((i.unit_price||0)*i.qty).toFixed(2))];
       }),
-      [""],["Subtotal","","","","",order.subtotal||0],[`GCT (${order.tax_rate||0}%)`,"","","","",order.tax_amount||0],["Total","","","","",order.total||0]
+      [],
+      ["Subtotal","","","","",order.subtotal||0],
+      [`GCT (${order.tax_rate||0}%)`, "","","","", order.tax_amount||0],
+      ["Total","","","","",order.total||0],
     ];
-    downloadCSV(rows,`${order.id}.csv`);
+    downloadCSV(rows, `${order.id}.csv`);
   };
 
   return (
     <div className="overlay"><div className="modal modal-lg">
       <div className="modal-head">
-        <h2>Invoice {order.id}</h2>
+        <h2>{isConsignment ? "📦" : "🧾"} {docLabel} {order.id}</h2>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,color:"var(--text2)",cursor:"pointer"}}>
             <input type="checkbox" checked={hideCost} onChange={e=>setHideCost(e.target.checked)}/>
             Hide cost
           </label>
           <button className="btn btn-secondary btn-sm" onClick={exportCSV}>⬇ CSV</button>
-          <button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings,isConsignment)}>🖨 PDF/Print</button>
+          <button className="btn btn-secondary btn-sm" onClick={()=>printInvoice(order,customer,settings,isConsignment,docLabel)}>🖨 PDF/Print</button>
           <button className="xbtn" onClick={onClose}>✕</button>
         </div>
       </div>
       <div className="modal-body">
         <div className="two-col" style={{marginBottom:20}}>
           <div>
-            <div style={{fontSize:11,color:"var(--text3)",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Bill To</div>
+            <div style={{fontSize:11,color:"var(--text3)",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>{isConsignment?"Delivered To":"Bill To"}</div>
             <div style={{fontWeight:700,fontSize:15}}>{customer?.company||order.customer_name}</div>
             <div style={{fontSize:12,color:"var(--text2)"}}>{customer?.tax_id?`TRN: ${customer.tax_id}`:""}</div>
             <div style={{fontSize:12,color:"var(--text2)"}}>{customer?.email||""}</div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,color:"var(--text3)",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Invoice Details</div>
+            <div style={{fontSize:11,color:"var(--text3)",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>{docLabel} Details</div>
             <div style={{fontSize:12}}>Date: {order.date}</div>
             {order.created_at&&<div style={{fontSize:11,color:"var(--text3)"}}>Generated: {new Date(order.created_at).toLocaleString("en-JM",{month:"short",day:"numeric",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>}
-            <div style={{fontSize:12}}>Payment: {order.payment_method||"—"}</div>
+            {!isConsignment&&<div style={{fontSize:12}}>Payment: {order.payment_method||"—"}</div>}
             <div style={{fontSize:12,marginTop:4}}><StatusBadge status={order.status}/></div>
           </div>
         </div>
 
+        {/* Consignment notice */}
+        {isConsignment && (
+          <div style={{marginBottom:16,padding:"10px 14px",background:"var(--accent)11",border:"1px solid var(--accent)44",borderRadius:8,fontSize:13}}>
+            📋 <strong>Delivery Note only.</strong> No invoice has been generated. A commercial invoice will be issued once goods are sold and settled off-platform.
+          </div>
+        )}
+
         <div className="tbl-wrap" style={{marginBottom:16}}>
           <table>
-            <thead><tr><th>Barcode</th><th>Product</th><th>Qty</th>{!hideCost&&<th style={{textAlign:"right",color:"var(--text3)"}}>Unit Cost</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}{!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}</tr></thead>
+            <thead><tr>
+              <th>Barcode</th><th>Product</th><th>Qty</th>
+              {!hideCost&&<th style={{textAlign:"right",color:"var(--text3)"}}>Unit Cost</th>}
+              {!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}
+              {!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}
+            </tr></thead>
             <tbody>{(order.items||[]).map((item,i)=>(
               <tr key={i}>
                 <td><code style={{fontSize:10}}>{item.barcode||"—"}</code></td>
@@ -6930,10 +7344,11 @@ function InvoiceViewModal({ order, settings, customers, products, onClose }) {
             <div className="total-row grand"><span>Total</span><span>{fmt(order.total)}</span></div>
           </div>
         </div>}
-        {order.notes&&<div style={{marginTop:12,padding:12,background:"var(--bg3)",borderRadius:7,fontSize:12,color:"var(--text2)"}}><strong>Notes:</strong> {order.notes}</div>}
-        {order.type==="consignment"&&order.consignment_due&&<div style={{marginTop:8,fontSize:12,color:"var(--warn)"}}>📋 Consignment settlement due: {order.consignment_due}</div>}
 
-        {/* Bank transfer + payment link */}
+        {order.notes&&<div style={{marginTop:12,padding:12,background:"var(--bg3)",borderRadius:7,fontSize:12,color:"var(--text2)"}}><strong>Notes:</strong> {order.notes}</div>}
+        {isConsignment&&order.consignment_due&&<div style={{marginTop:8,fontSize:12,color:"var(--warn)"}}>📋 Consignment settlement due: {order.consignment_due}</div>}
+
+        {/* Bank transfer + payment link — upfront only */}
         {!isConsignment&&(settings.bank_name||settings.payment_link)&&(
           <div style={{marginTop:20,borderTop:"2px solid var(--border)",paddingTop:16,display:"grid",gridTemplateColumns:settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr",gap:16}}>
             {settings.bank_name&&(
@@ -6965,10 +7380,111 @@ function InvoiceViewModal({ order, settings, customers, products, onClose }) {
     </div></div>
   );
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── EMAIL MODAL ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
+// ─── CANCEL REASON MODAL ─────────────────────────────────────────────────────
+function CancelReasonModal({ title, itemLabel, onConfirm, onClose }) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="overlay" style={{zIndex:9999}}><div className="modal" style={{maxWidth:420}}>
+      <div className="modal-head"><h2>✕ {title}</h2><button className="xbtn" onClick={onClose}>✕</button></div>
+      <div className="modal-body">
+        <div style={{padding:"10px 14px",background:"var(--danger)11",border:"1px solid var(--danger)44",borderRadius:8,fontSize:13,color:"var(--danger)",marginBottom:14}}>
+          You are about to cancel: <strong>{itemLabel}</strong>
+        </div>
+        <div className="form-group">
+          <label>Reason for cancellation <span style={{color:"var(--text3)",fontWeight:400}}>(optional)</span></label>
+          <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={3} placeholder="e.g. Customer requested cancellation, stock issue, duplicate order…"/>
+        </div>
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Keep</button>
+        <button className="btn btn-danger" disabled={busy} onClick={async()=>{ setBusy(true); await onConfirm(reason); setBusy(false); }}>
+          {busy?"Cancelling…":"✕ Confirm Cancellation"}
+        </button>
+      </div>
+    </div></div>
+  );
+}
+
+function OrderEmailModal({ order, customers, settings, onClose, showToast }) {
+  const customer = customers.find(c=>c.id===order?.customer_id);
+  const isConsignment = order?.type==="consignment" || customer?.customer_type==="consignment";
+  const [to, setTo] = useState(customer?.email||"");
+  const [subject, setSubject] = useState(`Order ${order?.id} — ${settings.company_name||"Pinglinks Cellular"}`);
+  const [body, setBody] = useState(
+    `Dear ${customer?.company||order?.customer_name||"Customer"},\n\nThis is regarding your order ${order?.id} placed on ${order?.date}.\n\n${!isConsignment&&order?.total?`Order Total: J$${(order.total||0).toLocaleString()}\n\n`:""
+}Please contact us if you have any questions.\n\n${settings.company_name||"Pinglinks Cellular"}\n${settings.company_phone||""}`
+  );
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    if (!to) { showToast("Please enter a recipient email", "err"); return; }
+    setSending(true);
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/send-invoice-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({
+          to, subject, bodyText: body,
+          orderId: order.id,
+          customerName: customer?.company||order.customer_name,
+          customerTRN: customer?.tax_id||"",
+          orderDate: order.date,
+          paymentMethod: order.payment_method||"",
+          orderStatus: order.status,
+          orderType: order.type||"standard",
+          items: order.items||[],
+          subtotal: order.subtotal||0,
+          taxRate: order.tax_rate||0,
+          taxAmount: order.tax_amount||0,
+          total: order.total||0,
+          notes: order.notes||"",
+          isConsignment,
+          bankName: settings.bank_name||"",
+          bankAccountName: settings.bank_account_name||"",
+          bankAccountNumber: settings.bank_account_number||"",
+          bankBranch: settings.bank_routing||"",
+          bankNotes: settings.bank_notes||"",
+          paymentLink: settings.payment_link||"",
+          paymentLinkLabel: settings.payment_link_label||"Pay Now",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        showToast("Failed to send: " + (data.error||"Unknown error"), "err");
+      } else {
+        showToast(`Email sent to ${to} ✓`);
+        onClose();
+      }
+    } catch(e) {
+      showToast("Send failed: " + e.message, "err");
+    }
+    setSending(false);
+  };
+
+  return (
+    <div className="overlay"><div className="modal modal-md">
+      <div className="modal-head"><h2>📧 Email Customer — {order?.id}</h2><button className="xbtn" onClick={onClose}>✕</button></div>
+      <div className="modal-body">
+        {!customer?.email&&<div className="alert alert-warn" style={{marginBottom:12}}>⚠️ No email on file for this customer — enter one below.</div>}
+        <div className="form-group"><label>To</label><input value={to} onChange={e=>setTo(e.target.value)} placeholder="customer@email.com"/></div>
+        <div className="form-group"><label>Subject</label><input value={subject} onChange={e=>setSubject(e.target.value)}/></div>
+        <div className="form-group"><label>Message</label><textarea value={body} onChange={e=>setBody(e.target.value)} rows={7}/></div>
+        <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>The order summary will be embedded below your message.</div>
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={send} disabled={sending||!to}>
+          {sending?"Sending…":"📧 Send Email"}
+        </button>
+      </div>
+    </div></div>
+  );
+}
+
 function EmailModal({ order, customers, settings, onClose, showToast }) {
   const customer = customers.find(c=>c.id===order.customer_id);
   const isConsignment = order.type==="consignment" || customer?.customer_type==="consignment";
