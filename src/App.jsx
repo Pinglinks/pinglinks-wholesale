@@ -2952,15 +2952,15 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
       <td style={{fontWeight:500}}>{o.customer_name}</td>
       <td style={{fontSize:12,color:"var(--text2)"}}>{o.date}</td>
       <td><span className={`badge ${o.type==="consignment"?"bo":"bb"}`}>{o.type||"standard"}</span></td>
-      <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"\u2014"}</td>
+      <td style={{fontSize:12,color:"var(--text2)"}}>{o.payment_method||"—"}</td>
       <td style={{fontWeight:600,color:"var(--accent)"}}>
         {o.type==="consignment"?<span style={{fontSize:11,color:"var(--text3)",fontStyle:"italic"}}>Consignment</span>:fmt(o.total)}
       </td>
       <td><StatusBadge status={o.status}/></td>
       <td><div className="tbl-actions">
         {isActive&&<button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>View & Ship</button>}
-        {isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>\u{1F4E7}</button>}
-        {isActive&&<button className="btn btn-danger btn-xs" onClick={()=>setCancelModal(o)}>\u2715</button>}
+        {isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>}
+        {isActive&&<button className="btn btn-danger btn-xs" onClick={()=>setCancelModal(o)}>✕</button>}
         {!isActive&&o.notes&&<span style={{fontSize:11,color:"var(--text3)",maxWidth:220,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={o.notes}>{o.notes}</span>}
       </div></td>
     </tr>
@@ -2970,8 +2970,8 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
     <>
       <div className="filter-bar">
         <div className="search-wrap" style={{flex:2}}>
-          <span className="search-icon">\u{1F50D}</span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by order # or customer\u2026"/>
+          <span className="search-icon">🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by order # or customer…"/>
         </div>
         <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
         <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
@@ -3011,7 +3011,7 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
 
       {shipModal&&<ShipOrderModal order={shipModal} orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} products={products} setProducts={setProducts} settings={settings} showToast={showToast} onClose={()=>setShipModal(null)}/>}
       {showEmailModal&&<OrderEmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
-      {cancelModal&&<CancelReasonModal title="Cancel Order" itemLabel={`${cancelModal.id} \u2014 ${cancelModal.customer_name}`} onConfirm={r=>doCancel(cancelModal,r)} onClose={()=>setCancelModal(null)}/>}
+      {cancelModal&&<CancelReasonModal title="Cancel Order" itemLabel={`${cancelModal.id} — ${cancelModal.customer_name}`} onConfirm={r=>doCancel(cancelModal,r)} onClose={()=>setCancelModal(null)}/>}
       {showCreateOrder&&<AdminCreateOrderModal customers={customers} products={products} orders={orders} setOrders={setOrders} settings={settings} showToast={showToast} onClose={()=>setShowCreateOrder(false)}/>}
     </>
   );
