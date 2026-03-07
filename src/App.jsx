@@ -4089,7 +4089,7 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
           onClose={()=>setShipModal(null)}
         />
       )}
-      {showEmailModal&&<OrderEmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
+      {showEmailModal&&<BackorderEmailModal order={showEmailModal.order} items={showEmailModal.items} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
       {cancelBOModal&&<CancelReasonModal title="Cancel Backorder" itemLabel={`${cancelBOModal.product_name} (${cancelBOModal.qty_remaining} remaining) — Order ${cancelBOModal.order_id}`} onConfirm={r=>cancelBackorder(cancelBOModal,r)} onClose={()=>setCancelBOModal(null)}/>}
     </>
   );
