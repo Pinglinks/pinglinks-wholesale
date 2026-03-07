@@ -2968,10 +2968,10 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
       </td>
       <td><StatusBadge status={o.status}/></td>
       <td><div className="tbl-actions">
-        {isActive&&<button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>View & Ship</button>}
+        {isActive&&<button className="btn btn-primary btn-xs" onClick={()=>setViewOrder({order:o,mode:"view"})}>View</button>}
         {isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>}
         {isActive&&<button className="btn btn-danger btn-xs" onClick={()=>setCancelModal(o)}>✕</button>}
-        {!isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setViewOrder(o)}>👁 View</button>}
+        {!isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setViewOrder({order:o,mode:"view"})}>👁 View</button>}
         {!isActive&&o.notes&&<span style={{fontSize:11,color:"var(--text3)",maxWidth:180,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={o.notes}>{o.notes}</span>}
       </div></td>
     </tr>
@@ -3024,7 +3024,7 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
       {showEmailModal&&<OrderEmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
       {cancelModal&&<CancelReasonModal title="Cancel Order" itemLabel={`${cancelModal.id} — ${cancelModal.customer_name}`} onConfirm={r=>doCancel(cancelModal,r)} onClose={()=>setCancelModal(null)}/>}
       {viewOrder==="new"&&<AdminCreateOrderPage customers={customers} products={products} orders={orders} setOrders={setOrders} settings={settings} showToast={showToast} onClose={()=>setViewOrder(null)}/>}
-      {viewOrder&&viewOrder!=="new"&&<CancelledOrderViewModal order={viewOrder} onClose={()=>setViewOrder(null)}/>}
+      {viewOrder&&viewOrder!=="new"&&<OrderDetailPage order={orders.find(o=>o.id===viewOrder.order?.id)||viewOrder.order} orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} products={products} setProducts={setProducts} customers={customers} settings={settings} showToast={showToast} onClose={()=>setViewOrder(null)} initialMode={viewOrder.mode||"view"}/>}
     </>
   );
 }
@@ -3085,6 +3085,328 @@ function CancelledOrderViewModal({ order, onClose }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ─── ORDER DETAIL PAGE ────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+function OrderDetailPage({ order: initialOrder, orders, setOrders, backorders, setBackorders, products, setProducts, customers, settings, showToast, onClose, initialMode="view" }) {
+  const [mode, setMode]           = useState(initialMode); // "view" | "edit" | "ship"
+  const [order, setOrder]         = useState(initialOrder);
+  const [editItems, setEditItems] = useState(initialOrder?.items || []);
+  const [editType,  setEditType]  = useState(initialOrder?.type || "standard");
+  const [editNotes, setEditNotes] = useState(initialOrder?.notes || "");
+  const [productSearch, setProductSearch] = useState("");
+  const [editingProduct, setEditingProduct] = useState(null); // product being edited inline
+  const [busy, setBusy] = useState(false);
+
+  const [prodFilterBrand, setProdFilterBrand] = useState("Brand");
+  const [prodFilterCat,   setProdFilterCat]   = useState("Category");
+
+  const fmt = n => "J$"+Number(n||0).toLocaleString();
+  const customer = customers?.find(c=>c.id===order?.customer_id);
+  const isActive = order?.status === "order" || order?.status === "partial_shipped";
+  const isCancelled = order?.status === "cancelled";
+  const isConsignment = editType === "consignment";
+
+  const taxRate  = settings?.tax_rate || 0;
+  const subtotal = isConsignment ? 0 : editItems.reduce((s,i)=>s+(i.qty||0)*(i.unit_price||0),0);
+  const taxAmt   = isConsignment ? 0 : Math.round(subtotal*taxRate/100);
+  const total    = subtotal + taxAmt;
+
+  const activeProducts = products.filter(p=>p.active&&p.wholesale_visible!==false);
+  const prodBrands = ["Brand",...[...new Set(activeProducts.map(p=>p.brand).filter(Boolean))].sort()];
+  const prodCats   = ["Category",...[...new Set(activeProducts.map(p=>p.category).filter(Boolean))].sort()];
+  const searchedProducts = activeProducts.filter(p=>{
+    const q = productSearch.toLowerCase();
+    if(q && !p.name?.toLowerCase().includes(q) && !p.barcode?.includes(q) && !p.brand?.toLowerCase().includes(q)) return false;
+    if(prodFilterBrand!=="Brand" && p.brand!==prodFilterBrand) return false;
+    if(prodFilterCat!=="Category" && p.category!==prodFilterCat) return false;
+    return true;
+  });
+
+  const addProduct = (p) => {
+    if(editItems.find(i=>i.product_id===p.id)) { showToast("Already on order","warn"); return; }
+    setEditItems(prev=>[...prev,{product_id:p.id,name:p.name,barcode:p.barcode||"",sku:p.sku||"",unit_price:p.wholesale_price||0,qty:1,stock:p.stock}]);
+  };
+
+  const saveEdit = async () => {
+    if(!editItems.length){showToast("Order must have at least one item","err");return;}
+    setBusy(true);
+    try {
+      const newSub = isConsignment ? 0 : editItems.reduce((s,i)=>s+(i.qty||0)*(i.unit_price||0),0);
+      const newTax = isConsignment ? 0 : Math.round(newSub*taxRate/100);
+      const newTotal = newSub+newTax;
+      const update = { type:editType, notes:editNotes, subtotal:newSub, tax_rate:taxRate, tax_amount:newTax, total:newTotal };
+      await supabase.from("orders").update(update).eq("id",order.id);
+      // Upsert items — delete old, insert new
+      await supabase.from("order_items").delete().eq("order_id",order.id);
+      await supabase.from("order_items").insert(editItems.map(i=>({order_id:order.id,product_id:i.product_id,name:i.name,qty:i.qty,unit_price:i.unit_price,barcode:i.barcode||"",sku:i.sku||""})));
+      const updated = {...order,...update,items:editItems};
+      setOrder(updated);
+      setOrders(prev=>prev.map(o=>o.id===order.id?updated:o));
+      try { await supabase.from("activity_log").insert({action:"order_edited",details:`Order ${order.id} edited — ${editItems.length} item(s), type: ${editType}`,entity_type:"order",entity_id:order.id,user_name:currentUserName,timestamp:new Date().toISOString()}); } catch(e){}
+      showToast("Order saved ✓");
+      setMode("view");
+    } catch(e){ showToast("Save failed: "+e.message,"err"); }
+    setBusy(false);
+  };
+
+  const updateItem = (pid,field,val) => setEditItems(prev=>prev.map(i=>i.product_id===pid?{...i,[field]:field==="qty"||field==="unit_price"?Number(val)||0:val}:i));
+  const removeItem = (pid) => setEditItems(prev=>prev.filter(i=>i.product_id!==pid));
+
+  if(mode==="ship") return (
+    <ShipOrderModal
+      order={order} orders={orders} setOrders={setOrders}
+      backorders={backorders} setBackorders={setBackorders}
+      products={products} setProducts={setProducts}
+      settings={settings} showToast={showToast}
+      onClose={()=>{ setMode("view"); }}
+    />
+  );
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"var(--bg)",zIndex:2000,overflowY:"auto"}}>
+      {/* Top bar */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px",borderBottom:"1px solid var(--border)",background:"var(--bg2)",position:"sticky",top:0,zIndex:10,gap:12,flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>← Orders</button>
+          <span style={{fontSize:16,fontWeight:700}}>{order?.id}</span>
+          <StatusBadge status={order?.status}/>
+          {mode==="edit"&&<span className="badge bw" style={{fontSize:10}}>✏ Editing</span>}
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {mode==="view"&&isActive&&<button className="btn btn-secondary btn-sm" onClick={()=>{setEditItems(order.items||[]);setEditType(order.type||"standard");setEditNotes(order.notes||"");setMode("edit");}}>✏ Edit Order</button>}
+          {mode==="view"&&isActive&&<button className="btn btn-primary btn-sm" onClick={()=>setMode("ship")}>🚚 Ship Order</button>}
+          {mode==="edit"&&<button className="btn btn-secondary btn-sm" onClick={()=>setMode("view")}>Discard</button>}
+          {mode==="edit"&&<button className="btn btn-primary btn-sm" onClick={saveEdit} disabled={busy}>{busy?"Saving…":"✓ Save Changes"}</button>}
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 280px",gap:20,padding:24,maxWidth:1100,margin:"0 auto"}}>
+        {/* LEFT — items */}
+        <div>
+          {/* Order type selector in edit mode */}
+          {mode==="edit"&&(
+            <div className="card" style={{marginBottom:16}}>
+              <div className="card-body" style={{display:"flex",gap:16,alignItems:"center",flexWrap:"wrap"}}>
+                <div className="form-group" style={{margin:0,flex:"0 0 auto"}}>
+                  <label style={{fontSize:11}}>Order Type</label>
+                  <select value={editType} onChange={e=>setEditType(e.target.value)} style={{width:"auto"}}>
+                    <option value="standard">Standard (Upfront)</option>
+                    <option value="consignment">Consignment</option>
+                  </select>
+                </div>
+                <div className="form-group" style={{margin:0,flex:1}}>
+                  <label style={{fontSize:11}}>Notes</label>
+                  <input value={editNotes} onChange={e=>setEditNotes(e.target.value)} placeholder="Order notes…"/>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Items table */}
+          <div className="card" style={{marginBottom:mode==="edit"?16:0}}>
+            <div className="card-header">
+              <h3>Order Items</h3>
+              {mode==="view"&&<span style={{fontSize:12,color:"var(--text3)"}}>{(order?.items||[]).length} line(s)</span>}
+            </div>
+            <div className="tbl-wrap">
+              <table>
+                <thead><tr>
+                  <th>#</th>
+                  <th>Product</th>
+                  <th>Barcode</th>
+                  <th style={{textAlign:"center"}}>Qty</th>
+                  {!isConsignment&&<th style={{textAlign:"right"}}>Unit Price</th>}
+                  {!isConsignment&&<th style={{textAlign:"right"}}>Total</th>}
+                  {mode==="edit"&&<th></th>}
+                </tr></thead>
+                <tbody>
+                  {(mode==="edit"?editItems:(order?.items||[])).map((item,idx)=>{
+                    const prod = products.find(p=>p.id===item.product_id);
+                    const lineTotal = (item.qty||0)*(item.unit_price||0);
+                    return (
+                      <tr key={item.product_id||idx}>
+                        <td style={{color:"var(--text3)",fontSize:12,fontWeight:600}}>{idx+1}</td>
+                        <td>
+                          <div style={{fontWeight:500}}>
+                            {prod
+                              ? <button onClick={()=>setEditingProduct(prod)}
+                                  style={{background:"none",border:"none",padding:0,cursor:"pointer",fontWeight:600,fontSize:13,color:"var(--text1)",textDecoration:"underline dotted",textUnderlineOffset:3,textAlign:"left"}}>
+                                  {item.name}
+                                </button>
+                              : item.name}
+                          </div>
+                          {prod&&<div style={{fontSize:10,color:"var(--text3)"}}>Stock: <strong style={{color:prod.stock===0?"var(--danger)":prod.stock<=(prod.low_stock_threshold||0)?"var(--warn)":"var(--success)"}}>{prod.stock}</strong></div>}
+                        </td>
+                        <td><code style={{fontSize:11}}>{item.barcode||"—"}</code></td>
+                        <td style={{textAlign:"center"}}>
+                          {mode==="edit"
+                            ? <input type="number" min={1} value={item.qty} onChange={e=>updateItem(item.product_id,"qty",e.target.value)} style={{width:60,textAlign:"center"}}/>
+                            : <strong>{item.qty}</strong>}
+                        </td>
+                        {!isConsignment&&<td style={{textAlign:"right"}}>
+                          {mode==="edit"
+                            ? <input type="number" min={0} value={item.unit_price} onChange={e=>updateItem(item.product_id,"unit_price",e.target.value)} style={{width:80,textAlign:"right"}}/>
+                            : fmt(item.unit_price||0)}
+                        </td>}
+                        {!isConsignment&&<td style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>{fmt(lineTotal)}</td>}
+                        {mode==="edit"&&<td><button className="btn btn-danger btn-xs" onClick={()=>removeItem(item.product_id)}>✕</button></td>}
+                      </tr>
+                    );
+                  })}
+                  {(mode==="edit"?editItems:(order?.items||[])).length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No items.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Add product picker in edit mode */}
+          {mode==="edit"&&(
+            <div className="card">
+              <div className="card-header"><h3>Add Products</h3></div>
+              <div className="card-body">
+                <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+                  <div className="search-wrap" style={{flex:2,minWidth:160}}>
+                    <span className="search-icon">🔍</span>
+                    <input value={productSearch} onChange={e=>setProductSearch(e.target.value)} placeholder="Search products…"/>
+                  </div>
+                  <select value={prodFilterBrand} onChange={e=>setProdFilterBrand(e.target.value)} style={{padding:"5px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:12}}>
+                    {prodBrands.map(b=><option key={b}>{b}</option>)}
+                  </select>
+                  <select value={prodFilterCat} onChange={e=>setProdFilterCat(e.target.value)} style={{padding:"5px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg2)",fontSize:12}}>
+                    {prodCats.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div style={{border:"1px solid var(--border)",borderRadius:8,overflowY:"auto",maxHeight:220,background:"var(--bg)"}}>
+                  {searchedProducts.length===0
+                    ? <div style={{padding:14,textAlign:"center",color:"var(--text3)",fontSize:13}}>No products match</div>
+                    : searchedProducts.map(p=>{
+                        const alreadyAdded = !!editItems.find(i=>i.product_id===p.id);
+                        const stockColor = p.stock===0?"var(--danger)":p.stock<=5?"var(--warn)":"var(--success)";
+                        return (
+                          <div key={p.id} onClick={()=>!alreadyAdded&&addProduct(p)}
+                            style={{display:"grid",gridTemplateColumns:"1fr auto auto",alignItems:"center",gap:8,padding:"7px 12px",borderBottom:"1px solid var(--border)",cursor:alreadyAdded?"default":"pointer",opacity:alreadyAdded?0.4:1,fontSize:13}}
+                            onMouseEnter={e=>{if(!alreadyAdded)e.currentTarget.style.background="var(--bg3)"}}
+                            onMouseLeave={e=>{if(!alreadyAdded)e.currentTarget.style.background="transparent"}}>
+                            <div>
+                              <div style={{fontWeight:500}}>{p.name}</div>
+                              <div style={{fontSize:10,color:"var(--text3)"}}>{p.brand||""}{p.barcode?" · "+p.barcode:""}</div>
+                            </div>
+                            <div style={{textAlign:"right",minWidth:48}}>
+                              <div style={{fontWeight:600,fontSize:12,color:stockColor}}>{p.stock??0}</div>
+                              <div style={{fontSize:9,color:"var(--text3)"}}>stock</div>
+                            </div>
+                            <div style={{minWidth:60,textAlign:"right"}}>
+                              {alreadyAdded
+                                ? <span style={{fontSize:10,color:"var(--success)",fontWeight:600}}>✓ Added</span>
+                                : <span style={{fontSize:11,color:"var(--accent)",fontWeight:600}}>{fmt(p.wholesale_price)}</span>}
+                            </div>
+                          </div>
+                        );
+                      })
+                  }
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT — summary panel */}
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {/* Order info */}
+          <div className="card">
+            <div className="card-header"><h3>Order Info</h3></div>
+            <div className="card-body" style={{fontSize:13}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{color:"var(--text3)"}}>Customer</span>
+                <span style={{fontWeight:600,textAlign:"right"}}>{order?.customer_name}</span>
+              </div>
+              {customer?.phone&&<div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{color:"var(--text3)"}}>Phone</span>
+                <span>{customer.phone}</span>
+              </div>}
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{color:"var(--text3)"}}>Date</span>
+                <span>{order?.date}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{color:"var(--text3)"}}>Type</span>
+                <span><span className={`badge ${(mode==="edit"?editType:order?.type)==="consignment"?"bo":"bb"}`}>{mode==="edit"?editType:order?.type||"standard"}</span></span>
+              </div>
+              {order?.notes&&<div style={{marginTop:8,padding:"6px 10px",background:"var(--bg3)",borderRadius:6,fontSize:12,color:"var(--text2)"}}>{order.notes}</div>}
+            </div>
+          </div>
+
+          {/* Totals */}
+          <div className="card">
+            <div className="card-header"><h3>Order Total</h3></div>
+            <div className="card-body" style={{fontSize:13}}>
+              {isConsignment
+                ? <div style={{color:"var(--text3)",fontSize:12,fontStyle:"italic"}}>Consignment — pricing on invoice</div>
+                : <>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                      <span style={{color:"var(--text3)"}}>Subtotal</span>
+                      <span>{fmt(mode==="edit"?subtotal:(order?.subtotal||0))}</span>
+                    </div>
+                    {taxRate>0&&<div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                      <span style={{color:"var(--text3)"}}>GCT ({taxRate}%)</span>
+                      <span>{fmt(mode==="edit"?taxAmt:(order?.tax_amount||0))}</span>
+                    </div>}
+                    <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:16,color:"var(--accent)",borderTop:"1px solid var(--border)",paddingTop:8,marginTop:4}}>
+                      <span>Total</span>
+                      <span>{fmt(mode==="edit"?total:(order?.total||0))}</span>
+                    </div>
+                  </>
+              }
+              <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:12,color:"var(--text3)"}}>
+                <span>Items</span>
+                <span>{(mode==="edit"?editItems:(order?.items||[])).reduce((s,i)=>s+(i.qty||0),0)} units across {(mode==="edit"?editItems:(order?.items||[])).length} SKU(s)</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          {!isCancelled&&mode==="view"&&(
+            <div className="card">
+              <div className="card-body" style={{display:"flex",flexDirection:"column",gap:8}}>
+                {isActive&&<button className="btn btn-primary" onClick={()=>setMode("ship")}>🚚 Ship Order</button>}
+                {isActive&&<button className="btn btn-secondary" onClick={()=>{setEditItems(order.items||[]);setEditType(order.type||"standard");setEditNotes(order.notes||"");setMode("edit");}}>✏ Edit Order</button>}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {editingProduct&&<ProductModal
+        product={editingProduct}
+        categories={[...new Set(products.map(p=>p.category).filter(Boolean))].sort()}
+        onClose={()=>setEditingProduct(null)}
+        onSave={async(data)=>{
+          const {error} = await supabase.from("products").update({
+            name:data.name, barcode:data.barcode||"", brand:data.brand||"",
+            category:data.category||"Uncategorized",
+            wholesale_price:data.wholesale_price||0, retail_price:data.retail_price||0,
+            low_stock_threshold:data.low_stock_threshold||5, min_order:data.min_order||1,
+            description:data.description||"", image_url:data.image_url||null,
+            is_clearance:data.is_clearance||false, clearance_price:data.clearance_price||null,
+          }).eq("id",editingProduct.id);
+          if(error){ showToast("Save failed: "+error.message,"err"); return; }
+          const updated = {...editingProduct,...data};
+          setProducts(prev=>prev.map(p=>p.id===editingProduct.id ? updated : p));
+          // Reflect name change in current order view
+          setOrder(prev=>({...prev, items:(prev.items||[]).map(i=>
+            i.product_id===editingProduct.id ? {...i, name:data.name, barcode:data.barcode||i.barcode} : i
+          )}));
+          showToast("Product updated ✓");
+          setEditingProduct(null);
+        }}
+      />}
+    </div>
+  );
+}
+
+// ─── CANCELLED ORDER VIEW MODAL (kept for backward compat) ───────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── ADMIN CREATE ORDER PAGE (full-screen overlay, persists nav) ──────────────
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3391,7 +3713,7 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
 
   const [shipQtys, setShipQtys] = useState(() => {
     const init = {};
-    lineItems.forEach(item => { init[item.product_id] = item.qty; });
+    lineItems.forEach(item => { init[item.product_id] = 0; }); // admin must enter manually
     return init;
   });
   // Editable "ordered" qty — allows admin to adjust before shipping
@@ -3449,14 +3771,17 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
 
       for (const item of lineItems) {
         const ordQty = getOrderQty(item.product_id);
-        const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, ordQty));
+        // Fetch live stock to cap shipment
+        const { data: liveProd } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
+        const availableStock = liveProd?.stock ?? (products?.find(p=>p.id===item.product_id)?.stock || 0);
+        const requestedShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, ordQty));
+        const toShip = Math.min(requestedShip, availableStock); // never ship more than in stock
         const remaining = ordQty - toShip;
 
         if (toShip > 0) {
-          // Deduct stock
-          const { data: prod } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
-          if (prod) {
-            const newStock = Math.max(0, prod.stock - toShip);
+          // Deduct stock (liveProd already fetched above)
+          if (liveProd) {
+            const newStock = Math.max(0, liveProd.stock - toShip);
             await supabase.from("products").update({ stock: newStock }).eq("id", item.product_id);
             setProducts(prev => prev.map(p => p.id === item.product_id ? {...p, stock: newStock} : p));
           }
@@ -3584,13 +3909,20 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
             </tr></thead>
             <tbody>{lineItems.map(item => {
               const ordQty = getOrderQty(item.product_id);
-              const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, ordQty));
+              const prod = products?.find(x=>x.id===item.product_id);
+              const availStock = prod?.stock ?? 0;
+              const requested = parseInt(shipQtys[item.product_id]) ?? ordQty;
+              const toShip = Math.max(0, Math.min(requested, ordQty, availStock));
               const bo = ordQty - toShip;
+              const overStock = requested > availStock && availStock < ordQty;
               return (
-                <tr key={item.product_id}>
+                <tr key={item.product_id} style={{background:overStock?"rgba(239,68,68,.04)":""}}>
                   <td>
                     <div style={{fontWeight:500}}>{item.name}</div>
-                    {(()=>{const p=products?.find(x=>x.id===item.product_id);return p!=null?<div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>Current stock: <strong style={{color:p.stock===0?"var(--danger)":p.stock<=p.low_stock_threshold?"var(--warn)":"var(--success)"}}>{p.stock}</strong></div>:null;})()}
+                    {prod!=null&&<div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>
+                      Stock: <strong style={{color:availStock===0?"var(--danger)":availStock<=(prod.low_stock_threshold||0)?"var(--warn)":"var(--success)"}}>{availStock}</strong>
+                      {overStock&&<span style={{color:"var(--danger)",marginLeft:6,fontWeight:600}}>⚠ only {availStock} available</span>}
+                    </div>}
                   </td>
                   <td style={{textAlign:"center"}}>
                     {isBackorder
@@ -3602,16 +3934,17 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
                   </td>
                   <td style={{textAlign:"center"}}>
                     <input
-                      type="number" min={0} max={ordQty}
-                      value={shipQtys[item.product_id] ?? ordQty}
-                      onChange={e => setShipQtys(prev => ({...prev, [item.product_id]: Math.min(ordQty, Math.max(0,+e.target.value))}))}
-                      style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg3)"}}
+                      type="number" min={0} max={Math.min(ordQty, availStock)}
+                      value={shipQtys[item.product_id] ?? 0}
+                      onChange={e => setShipQtys(prev => ({...prev, [item.product_id]: Math.min(ordQty, availStock, Math.max(0,+e.target.value))}))}
+                      style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,border:`1px solid ${overStock?"var(--danger)":"var(--border)"}`,background:"var(--bg3)"}}
                     />
+                    {availStock===0&&<div style={{fontSize:10,color:"var(--danger)"}}>Out of stock</div>}
                   </td>
                   <td style={{textAlign:"center",color: bo > 0 ? "var(--warn)" : "var(--text3)", fontWeight: bo > 0 ? 600 : 400}}>
                     {bo > 0 ? bo : "—"}
                   </td>
-                  {!hideCost&&<td style={{textAlign:"right",fontSize:12,color:"var(--text3)"}}>{fmt(products?.find(p=>p.id===item.product_id)?.cost||0)}</td>}
+                  {!hideCost&&<td style={{textAlign:"right",fontSize:12,color:"var(--text3)"}}>{fmt(prod?.cost||0)}</td>}
                   <td style={{textAlign:"right",fontSize:12,fontWeight:600,color:"var(--accent)"}}>{fmt(item.unit_price||0)}</td>
                 </tr>
               );
@@ -5523,44 +5856,51 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
     setPO({...po, items:updatedItems});
   };
 
-  // Receive stock for one item
-  const receiveItem = async (item, receiveQty, newCost) => {
-    receiveQty = parseInt(receiveQty)||0;
-    newCost = parseFloat(newCost)||0;
-    if (receiveQty<=0) { showToast("Enter a valid qty","err"); return; }
-    const maxReceivable = (item.ordered_qty||0) - (item.received_qty||0);
-    if (receiveQty > maxReceivable) { showToast(`Max receivable: ${maxReceivable}`,"err"); return; }
+  // Receive stock for one item.
+  // newTotal = the desired TOTAL received qty (not additive).
+  // Passing a lower number than current corrects it and adjusts stock.
+  const receiveItem = async (item, newTotal, newCost) => {
+    newTotal = parseInt(newTotal);
+    newCost  = parseFloat(newCost)||0;
+    if (isNaN(newTotal) || newTotal < 0) { showToast("Enter a valid qty","err"); return; }
+    if (newTotal > (item.ordered_qty||0)) { showToast(`Cannot exceed ordered qty (${item.ordered_qty})`, "err"); return; }
+
+    const prevReceived = item.received_qty || 0;
+    const delta = newTotal - prevReceived; // positive = receiving more, negative = correction down
 
     const prod = products.find(p=>p.id===item.product_id);
-    if (prod) {
-      const existingValue = (prod.stock||0) * (prod.cost||0);
-      const newStock = (prod.stock||0) + receiveQty;
-      const avgCost = newStock > 0 ? Math.round((existingValue + receiveQty*newCost)/newStock) : newCost;
-      await supabase.from("products").update({stock:newStock, cost:avgCost, active:true}).eq("id",prod.id);
-      setProducts(prev=>prev.map(p=>p.id===prod.id?{...p,stock:newStock,cost:avgCost,active:true}:p));
+    if (prod && delta !== 0) {
+      const newStock = Math.max(0, (prod.stock||0) + delta);
+      let newAvgCost = prod.cost;
+      if (delta > 0) {
+        // Weighted average only when adding stock
+        const existingValue = (prod.stock||0) * (prod.cost||0);
+        newAvgCost = newStock > 0 ? Math.round((existingValue + delta*newCost) / newStock) : newCost;
+      }
+      await supabase.from("products").update({stock:newStock, cost:newAvgCost, active:true}).eq("id",prod.id);
+      setProducts(prev=>prev.map(p=>p.id===prod.id ? {...p, stock:newStock, cost:newAvgCost, active:true} : p));
       try { await supabase.from("activity_log").insert({
-        action:"stock_received",
-        details:`Received ${receiveQty} units @ ${fmt(newCost)} (avg cost now ${fmt(avgCost)}) via PO ${po.id}`,
+        action: delta > 0 ? "stock_received" : "stock_corrected",
+        details: delta > 0
+          ? `Received ${delta} units @ ${fmt(newCost)} (avg cost → ${fmt(newAvgCost)}) via PO ${po.id}`
+          : `Corrected received qty from ${prevReceived} → ${newTotal} (stock adjusted by ${delta}) via PO ${po.id}`,
         entity_type:"product", entity_id:String(prod.id),
         user_name:currentUserName, timestamp:new Date().toISOString()
-      }); } catch(e) {}
+      }); } catch(e){}
     }
 
-    const newReceived = (item.received_qty||0) + receiveQty;
-    await supabase.from("purchase_order_items").update({received_qty:newReceived, unit_cost:newCost}).eq("id",item.id);
-    const updatedItems = (po.items||[]).map(i=>i.id===item.id?{...i,received_qty:newReceived,unit_cost:newCost}:i);
+    await supabase.from("purchase_order_items").update({received_qty:newTotal, unit_cost:newCost}).eq("id",item.id);
+    const updatedItems = (po.items||[]).map(i => i.id===item.id ? {...i, received_qty:newTotal, unit_cost:newCost} : i);
 
-    // Auto-update PO status — never auto-complete to "received", only track partial progress
     const anyDone = updatedItems.some(i=>(i.received_qty||0)>0);
-    const autoStatus = anyDone?"partial":po.status==="cancelled"?"cancelled":"open";
-    // Only update if not already completed/cancelled
-    if (po.status!=="received"&&po.status!=="cancelled"&&autoStatus !== po.status){
+    const autoStatus = anyDone ? "partial" : po.status==="cancelled" ? "cancelled" : "open";
+    if (po.status!=="received" && po.status!=="cancelled" && autoStatus !== po.status) {
       await supabase.from("purchase_orders").update({status:autoStatus}).eq("id",po.id);
     }
-    const newStatus = po.status==="received"||po.status==="cancelled" ? po.status : autoStatus;
+    const newStatus = (po.status==="received"||po.status==="cancelled") ? po.status : autoStatus;
     setPO({...po, items:updatedItems, status:newStatus});
     setReceivingItem(null);
-    showToast(`✓ ${receiveQty} units received into inventory`);
+    showToast(delta > 0 ? `✓ ${delta} units received into inventory` : delta < 0 ? `✓ Received qty corrected to ${newTotal}` : "No change");
   };
 
   // Delete item
@@ -5732,7 +6072,15 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
                   <tr key={item.id||idx} style={{background:fullyReceived?"rgba(34,197,94,.04)":""}}>
                     <td style={{color:"var(--text3)",fontWeight:600,fontSize:12}}>{idx+1}</td>
                     <td>
-                      <div style={{fontSize:13,fontWeight:500}}>{item.product_name}</div>
+                      <div style={{fontSize:13,fontWeight:500}}>
+                        {item.product_id
+                          ? <button
+                              onClick={()=>setEditingItem(products.find(p=>p.id===item.product_id)||null)}
+                              style={{background:"none",border:"none",padding:0,cursor:"pointer",fontWeight:600,fontSize:13,color:"var(--text1)",textDecoration:"underline dotted",textUnderlineOffset:3,textAlign:"left"}}>
+                              {item.product_name}
+                            </button>
+                          : item.product_name}
+                      </div>
                       {prod&&<div style={{fontSize:10,color:"var(--text3)"}}>Current stock: {prod.stock} · Avg cost: {fmt(prod.cost)}</div>}
                     </td>
                     <td><code style={{fontSize:11,color:"var(--text3)"}}>{item.barcode||"—"}</code></td>
@@ -5743,7 +6091,16 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
                             onBlur={e=>{ if(+e.target.value!==item.ordered_qty) updateItemField(item,"ordered_qty",e.target.value); }}
                             style={{width:70,textAlign:"center"}}/>}
                     </td>
-                    <td style={{textAlign:"center",fontWeight:700,color:fullyReceived?"var(--success)":item.received_qty>0?"var(--warn)":"var(--text3)"}}>{item.received_qty||0}</td>
+                    <td style={{textAlign:"center"}}>
+                      {!isCompleted && po.status!=="cancelled"
+                        ? <button
+                            onClick={()=>setReceivingItem(item)}
+                            title={item.received_qty>0 ? "Click to correct received qty" : "Click to receive stock"}
+                            style={{background:"none",border:"none",cursor:"pointer",fontWeight:700,fontSize:14,color:fullyReceived?"var(--success)":item.received_qty>0?"var(--warn)":"var(--text3)",textDecoration:"underline dotted",textUnderlineOffset:3,padding:"2px 4px",borderRadius:4}}>
+                            {item.received_qty||0}
+                          </button>
+                        : <span style={{fontWeight:700,color:fullyReceived?"var(--success)":item.received_qty>0?"var(--warn)":"var(--text3)"}}>{item.received_qty||0}</span>}
+                    </td>
                     <td style={{textAlign:"center",fontWeight:700,color:remaining>0?"var(--accent)":"var(--success)"}}>{remaining>0?remaining:"✓ Done"}</td>
                     <td style={{textAlign:"right"}}>
                       {isCompleted
@@ -5761,13 +6118,17 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
                             style={{width:100,fontSize:11,padding:"2px 6px",border:"1px solid var(--border)",borderRadius:4}}/>}
                     </td>
                     <td>
-                      <div style={{display:"flex",gap:4}}>
-                        {isCompleted&&<span className="badge bg" style={{fontSize:10}}>✓ Done</span>}
-                        {!isCompleted&&!fullyReceived&&po.status!=="cancelled"&&(
-                          <button className="btn btn-primary btn-xs" onClick={()=>setReceivingItem(item)}>📥 Receive</button>
+                      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                        {isCompleted && <span className="badge bg" style={{fontSize:10}}>✓ Done</span>}
+                        {!isCompleted && po.status!=="cancelled" && (
+                          <button className={`btn btn-xs ${fullyReceived ? "btn-secondary" : "btn-primary"}`}
+                            onClick={()=>setReceivingItem(item)}>
+                            {item.received_qty>0 ? (fullyReceived ? "✏ Edit" : "📥 +More / Edit") : "📥 Receive"}
+                          </button>
                         )}
-                        {!isCompleted&&fullyReceived&&<span className="badge bg" style={{fontSize:10}}>✓ Received</span>}
-                        {!isCompleted&&!item.received_qty&&<button className="btn btn-danger btn-xs" onClick={()=>deleteItem(item)}>✕</button>}
+                        {!isCompleted && !item.received_qty && (
+                          <button className="btn btn-danger btn-xs" onClick={()=>deleteItem(item)}>✕</button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -5791,6 +6152,31 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
 
       {/* Receive item modal */}
       {receivingItem&&<ReceiveItemModal item={receivingItem} onReceive={receiveItem} onClose={()=>setReceivingItem(null)}/>}
+
+      {editingItem&&<ProductModal
+        product={editingItem}
+        categories={[...new Set(products.map(p=>p.category).filter(Boolean))].sort()}
+        onClose={()=>setEditingItem(null)}
+        onSave={async(data)=>{
+          const {error} = await supabase.from("products").update({
+            name:data.name, barcode:data.barcode||"", brand:data.brand||"",
+            category:data.category||"Uncategorized",
+            wholesale_price:data.wholesale_price||0, retail_price:data.retail_price||0,
+            low_stock_threshold:data.low_stock_threshold||5, min_order:data.min_order||1,
+            description:data.description||"", image_url:data.image_url||null,
+            is_clearance:data.is_clearance||false, clearance_price:data.clearance_price||null,
+          }).eq("id",editingItem.id);
+          if(error){ showToast("Save failed: "+error.message,"err"); return; }
+          const updated = {...editingItem,...data};
+          setProducts(prev=>prev.map(p=>p.id===editingItem.id ? updated : p));
+          // Reflect name/barcode change on the PO row immediately
+          setPO(prev=>({...prev, items:(prev.items||[]).map(i=>
+            i.product_id===editingItem.id ? {...i, product_name:data.name, barcode:data.barcode||i.barcode} : i
+          )}));
+          showToast("Product updated ✓");
+          setEditingItem(null);
+        }}
+      />}
 
       {/* New product modal */}
       {showNewProd&&<ProductModal
@@ -5827,38 +6213,79 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
 // ─── RECEIVE ITEM MODAL ───────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 function ReceiveItemModal({ item, onReceive, onClose }) {
-  const remaining = (item.ordered_qty||0) - (item.received_qty||0);
-  const [qty, setQty] = useState(remaining);
-  const [cost, setCost] = useState(item.unit_cost||"");
-  const [busy, setBusy] = useState(false);
+  const ordered       = item.ordered_qty || 0;
+  const prevReceived  = item.received_qty || 0;
+  const isCorrection  = prevReceived > 0;
+
+  // Default: if nothing received yet → blank; if correcting → show current total
+  const [totalQty, setTotalQty] = useState(isCorrection ? prevReceived : "");
+  const [cost, setCost]         = useState(item.unit_cost || "");
+  const [busy, setBusy]         = useState(false);
+
+  const numQty  = parseInt(totalQty) >= 0 ? parseInt(totalQty) : NaN;
+  const numCost = parseFloat(cost) || 0;
+  const delta   = isNaN(numQty) ? 0 : numQty - prevReceived;
+  const valid   = !isNaN(numQty) && numQty >= 0 && numQty <= ordered && numCost > 0;
 
   const handle = async () => {
     setBusy(true);
-    try {
-      await onReceive(item, qty, cost);
-    } catch(e) {
-      console.error("Receive error:", e);
-    } finally {
-      setBusy(false);
-    }
+    try { await onReceive(item, numQty, numCost); }
+    catch(e) { console.error(e); }
+    finally   { setBusy(false); }
   };
+
+  const deltaColor = delta > 0 ? "var(--success)" : delta < 0 ? "var(--danger)" : "var(--text3)";
+  const deltaLabel = delta > 0 ? `+${delta} units added to stock`
+                   : delta < 0 ? `${delta} units removed from stock`
+                   : "No change to stock";
 
   return (
     <div className="overlay"><div className="modal modal-sm">
       <div className="modal-head">
-        <h2>📥 Receive Stock</h2>
+        <h2>{isCorrection ? "✏ Edit Received Qty" : "📥 Receive Stock"}</h2>
         <button className="xbtn" onClick={onClose}>✕</button>
       </div>
       <div className="modal-body">
+
+        {/* Product summary */}
         <div style={{marginBottom:14,padding:12,background:"var(--bg3)",borderRadius:8}}>
-          <div style={{fontWeight:600,fontSize:14}}>{item.product_name}</div>
-          <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Ordered: {item.ordered_qty} · Previously received: {item.received_qty||0} · <strong style={{color:"var(--accent)"}}>Remaining: {remaining}</strong></div>
+          <div style={{fontWeight:600,fontSize:14,marginBottom:6}}>{item.product_name}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,textAlign:"center"}}>
+            <div>
+              <div style={{fontSize:11,color:"var(--text3)"}}>Ordered</div>
+              <div style={{fontWeight:700,fontSize:18}}>{ordered}</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:"var(--text3)"}}>Received</div>
+              <div style={{fontWeight:700,fontSize:18,color:prevReceived>0?"var(--warn)":"var(--text3)"}}>{prevReceived}</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:"var(--text3)"}}>Remaining</div>
+              <div style={{fontWeight:700,fontSize:18,color:"var(--accent)"}}>{Math.max(0,ordered-prevReceived)}</div>
+            </div>
+          </div>
         </div>
+
+        {isCorrection && (
+          <div style={{padding:"8px 12px",background:"rgba(251,191,36,.1)",border:"1px solid rgba(251,191,36,.35)",borderRadius:6,fontSize:12,color:"var(--warn)",marginBottom:12}}>
+            ✏ You are editing a previously logged receipt. Set the correct <strong>total</strong> received qty — stock will be adjusted by the difference.
+          </div>
+        )}
+
         <div className="form-row">
           <div className="form-group">
-            <label>Qty Receiving Now <span style={{color:"var(--danger)"}}>*</span></label>
-            <input type="number" min={1} max={remaining} value={qty} onChange={e=>setQty(Math.min(remaining,Math.max(1,+e.target.value)))} autoFocus/>
-            <div className="input-hint">Max: {remaining}</div>
+            <label>{isCorrection ? "Correct Total Received" : "Qty Receiving"} <span style={{color:"var(--danger)"}}>*</span></label>
+            <input type="number" min={0} max={ordered}
+              value={totalQty}
+              onChange={e => setTotalQty(Math.min(ordered, Math.max(0, +e.target.value)))}
+              placeholder={isCorrection ? prevReceived : "0"}
+              autoFocus/>
+            {!isNaN(numQty) && delta !== 0 && (
+              <div className="input-hint" style={{color:deltaColor,fontWeight:600}}>{deltaLabel}</div>
+            )}
+            {!isNaN(numQty) && delta === 0 && isCorrection && (
+              <div className="input-hint">Same as current — no stock change</div>
+            )}
           </div>
           <div className="form-group">
             <label>Unit Cost (J$) <span style={{color:"var(--danger)"}}>*</span></label>
@@ -5866,13 +6293,22 @@ function ReceiveItemModal({ item, onReceive, onClose }) {
             <div className="input-hint">Used for weighted avg cost</div>
           </div>
         </div>
-        {cost&&qty&&<div style={{padding:"10px 14px",background:"var(--bg3)",borderRadius:8,fontSize:13}}>
-          <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"var(--text3)"}}>Subtotal</span><span style={{fontWeight:700,color:"var(--accent)"}}>{fmt(+qty * +cost)}</span></div>
-        </div>}
+
+        {valid && numQty > 0 && (
+          <div style={{padding:"10px 14px",background:"var(--bg3)",borderRadius:8,fontSize:13}}>
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <span style={{color:"var(--text3)"}}>Total value ({numQty} × {fmt(numCost)})</span>
+              <span style={{fontWeight:700,color:"var(--accent)"}}>{fmt(numQty * numCost)}</span>
+            </div>
+          </div>
+        )}
+
       </div>
       <div className="modal-foot">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" disabled={busy||!qty||!cost} onClick={handle}>{busy?"Receiving…":"Confirm Receipt →"}</button>
+        <button className="btn btn-primary" disabled={busy || !valid} onClick={handle}>
+          {busy ? "Saving…" : isCorrection ? "✓ Save Correction" : "Confirm Receipt →"}
+        </button>
       </div>
     </div></div>
   );
