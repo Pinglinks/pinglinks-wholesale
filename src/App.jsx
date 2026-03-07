@@ -379,6 +379,28 @@ ${!isConsignment?`<table class="totals-table">
 </table>`:'<div style="margin:16px 0;padding:12px;background:#f7fafc;border-radius:6px;font-size:13px;color:#718096">Pricing will be confirmed by our team. Please contact us for your final invoice.</div>'}
 ${order.notes?`<div style="margin-top:16px;padding:12px;background:#f7fafc;border-radius:6px"><strong>Notes:</strong> ${order.notes}</div>`:""}
 
+${isConsignment?`
+<div style="margin-top:36px;border-top:2px solid #c8d6e8;padding-top:24px">
+  <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4a5568;margin-bottom:20px">Acknowledgement of Receipt</div>
+  <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:32px">
+    <div>
+      <div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div>
+      <div style="font-size:11px;color:#4a5568">Received by (Print Name)</div>
+    </div>
+    <div>
+      <div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div>
+      <div style="font-size:11px;color:#4a5568">Signature</div>
+    </div>
+    <div>
+      <div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div>
+      <div style="font-size:11px;color:#4a5568">Date</div>
+    </div>
+  </div>
+  <div style="margin-top:16px;font-size:11px;color:#718096;font-style:italic">
+    By signing above, the recipient confirms that the goods listed on this Delivery Note have been received in good condition and in the quantities stated.
+  </div>
+</div>`:""}`
+
 ${(!isConsignment&&(settings.bank_name||settings.payment_link))?`
 <div style="margin-top:28px;border-top:2px solid #c8d6e8;padding-top:20px;display:grid;grid-template-columns:${settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr"};gap:20px">
   ${settings.bank_name?`
@@ -2458,6 +2480,14 @@ function TransfersPage({ products, setProducts, transfers, setTransfers, stores,
     await supabase.from("transfers").update({status:"complete",total_cost:total}).eq("id",draft.id);
     const completed = {...draft, status:"complete", total_cost:total, items:trItems};
     setTransfers(p=>p.map(t=>t.id===draft.id?completed:t));
+    // Activity log
+    const itemLines = trItems.map(i=>`${i.name} ×${i.qty}`).join(", ");
+    try { await supabase.from("activity_log").insert({
+      action: "transfer_complete",
+      details: `Store transfer ${draft.id} → ${draft.store_name} | ${trItems.length} SKU(s), ${trItems.reduce((s,i)=>s+i.qty,0)} units | ${itemLines}`,
+      entity_type: "transfer", entity_id: draft.id,
+      user_name: currentUserName, timestamp: new Date().toISOString()
+    }); } catch(e) {}
     setActiveDraftId(null);
     setCompleting(false);
     setTab("history");
@@ -2865,8 +2895,8 @@ function RefundModal({ order, onClose, showToast, setOrders, setProducts, produc
                 </div>
                 {sel&&<div style={{display:"flex",alignItems:"center",gap:6}}>
                   <label style={{fontSize:11,color:"var(--text3)"}}>Return qty:</label>
-                  <input type="number" min={1} max={item.qty} value={sel.qty}
-                    onChange={e=>updateQty(item.product_id, Math.min(item.qty, Math.max(1,+e.target.value)))}
+                  <input type="number" min={0} max={item.qty} value={sel.qty}
+                    onChange={e=>updateQty(item.product_id, Math.min(item.qty, Math.max(0,+e.target.value)))}
                     style={{width:60,textAlign:"center",padding:"3px 6px",border:"1px solid var(--border)",borderRadius:6}}/>
                 </div>}
               </div>
@@ -2899,10 +2929,10 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
   const [search, setSearch] = useState("");
   const [filterDate, setFilterDate] = useState("");
   const [shipModal, setShipModal] = useState(null);
-  const [showCreateOrder, setShowCreateOrder] = useState(false);
   const [showEmailModal, setShowEmailModal] = useState(null);
   const [cancelModal, setCancelModal] = useState(null);
   const [tab, setTab] = useState("active");
+  const [viewOrder, setViewOrder] = useState(null); // null | "new" | order object
 
   const activeOrders = useMemo(() => orders.filter(o => {
     if (o.status !== "order") return false;
@@ -2961,7 +2991,8 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
         {isActive&&<button className="btn btn-primary btn-xs" onClick={()=>setShipModal(o)}>View & Ship</button>}
         {isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setShowEmailModal(o)}>📧</button>}
         {isActive&&<button className="btn btn-danger btn-xs" onClick={()=>setCancelModal(o)}>✕</button>}
-        {!isActive&&o.notes&&<span style={{fontSize:11,color:"var(--text3)",maxWidth:220,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={o.notes}>{o.notes}</span>}
+        {!isActive&&<button className="btn btn-ghost btn-xs" onClick={()=>setViewOrder(o)}>👁 View</button>}
+        {!isActive&&o.notes&&<span style={{fontSize:11,color:"var(--text3)",maxWidth:180,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={o.notes}>{o.notes}</span>}
       </div></td>
     </tr>
   );
@@ -2975,7 +3006,7 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
         </div>
         <input type="month" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{width:"auto",padding:"6px 10px"}}/>
         <PageSizeSelect perPage={pg.perPage} setPerPage={pg.setPerPage} reset={pg.reset}/>
-        <button className="btn btn-primary btn-sm" onClick={()=>setShowCreateOrder(true)}>+ Create Order</button>
+        <button className="btn btn-primary btn-sm" onClick={()=>setViewOrder("new")}>+ Create Order</button>
       </div>
 
       <div className="tabs" style={{marginBottom:0}}>
@@ -3012,15 +3043,72 @@ function OrdersPage({ orders, setOrders, backorders, setBackorders, customers, s
       {shipModal&&<ShipOrderModal order={shipModal} orders={orders} setOrders={setOrders} backorders={backorders} setBackorders={setBackorders} products={products} setProducts={setProducts} settings={settings} showToast={showToast} onClose={()=>setShipModal(null)}/>}
       {showEmailModal&&<OrderEmailModal order={showEmailModal} customers={customers} settings={settings} onClose={()=>setShowEmailModal(null)} showToast={showToast}/>}
       {cancelModal&&<CancelReasonModal title="Cancel Order" itemLabel={`${cancelModal.id} — ${cancelModal.customer_name}`} onConfirm={r=>doCancel(cancelModal,r)} onClose={()=>setCancelModal(null)}/>}
-      {showCreateOrder&&<AdminCreateOrderModal customers={customers} products={products} orders={orders} setOrders={setOrders} settings={settings} showToast={showToast} onClose={()=>setShowCreateOrder(false)}/>}
+      {viewOrder==="new"&&<AdminCreateOrderPage customers={customers} products={products} orders={orders} setOrders={setOrders} settings={settings} showToast={showToast} onClose={()=>setViewOrder(null)}/>}
+      {viewOrder&&viewOrder!=="new"&&<CancelledOrderViewModal order={viewOrder} onClose={()=>setViewOrder(null)}/>}
     </>
   );
 }
 
+// ─── CANCELLED ORDER VIEW MODAL ──────────────────────────────────────────────
+function CancelledOrderViewModal({ order, onClose }) {
+  const fmt = n => "J$"+Number(n||0).toLocaleString();
+  const items = order.items || [];
+  return (
+    <div className="overlay"><div className="modal modal-lg">
+      <div className="modal-head">
+        <h2>❌ Cancelled Order — {order.id}</h2>
+        <button className="xbtn" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+          <div><div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1}}>Customer</div><div style={{fontWeight:600}}>{order.customer_name}</div></div>
+          <div><div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1}}>Date</div><div>{order.date}</div></div>
+          <div><div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1}}>Type</div><div><span className={`badge ${order.type==="consignment"?"bo":"bb"}`}>{order.type||"standard"}</span></div></div>
+          <div><div style={{fontSize:11,color:"var(--text3)",textTransform:"uppercase",letterSpacing:1}}>Status</div><div><StatusBadge status={order.status}/></div></div>
+        </div>
+        {order.notes&&<div style={{background:"var(--bg3)",borderRadius:8,padding:"8px 12px",fontSize:12,color:"var(--text2)",marginBottom:14}}><strong>Note:</strong> {order.notes}</div>}
+        <div className="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th>Product</th><th>Barcode</th>
+              <th style={{textAlign:"center"}}>Qty</th>
+              {order.type!=="consignment"&&<><th style={{textAlign:"right"}}>Unit Price</th><th style={{textAlign:"right"}}>Total</th></>}
+            </tr></thead>
+            <tbody>
+              {items.map((i,idx)=>(
+                <tr key={idx}>
+                  <td style={{fontWeight:500}}>{i.name}</td>
+                  <td><code style={{fontSize:11}}>{i.barcode||"—"}</code></td>
+                  <td style={{textAlign:"center"}}>{i.qty}</td>
+                  {order.type!=="consignment"&&<>
+                    <td style={{textAlign:"right"}}>{fmt(i.unit_price||0)}</td>
+                    <td style={{textAlign:"right",fontWeight:600}}>{fmt((i.qty||0)*(i.unit_price||0))}</td>
+                  </>}
+                </tr>
+              ))}
+              {items.length===0&&<tr><td colSpan={5} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No items on record.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {order.type!=="consignment"&&order.total>0&&(
+          <div style={{textAlign:"right",padding:"8px 16px",fontSize:13}}>
+            {order.subtotal>0&&<div style={{color:"var(--text2)"}}>Subtotal: {fmt(order.subtotal)}</div>}
+            {order.tax_amount>0&&<div style={{color:"var(--text2)"}}>GCT: {fmt(order.tax_amount)}</div>}
+            <div style={{fontWeight:700,fontSize:16,color:"var(--accent)"}}>Total: {fmt(order.total)}</div>
+          </div>
+        )}
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Close</button>
+      </div>
+    </div></div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// ─── ADMIN CREATE ORDER MODAL ────────────────────────────────────────────────
+// ─── ADMIN CREATE ORDER PAGE (full-screen overlay, persists nav) ──────────────
 // ─────────────────────────────────────────────────────────────────────────────
-function AdminCreateOrderModal({ customers, products, orders, setOrders, settings, showToast, onClose }) {
+function AdminCreateOrderPage({ customers, products, orders, setOrders, settings, showToast, onClose }) {
   const approvedCustomers = customers.filter(c=>c.approved&&c.role==="buyer");
 
   // Customer selection or new customer creation
@@ -3031,7 +3119,6 @@ function AdminCreateOrderModal({ customers, products, orders, setOrders, setting
   // Order items
   const [items, setItems] = useState([]); // [{product_id, name, barcode, qty, unit_price}]
   const [productSearch, setProductSearch] = useState("");
-  const [payMethod, setPayMethod] = useState("Bank Transfer");
   const [orderType, setOrderType] = useState("standard");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
@@ -3112,7 +3199,7 @@ function AdminCreateOrderModal({ customers, products, orders, setOrders, setting
       const orderData = {
         id, customer_id: custId, customer_name: custName,
         date: today(), status: "order",
-        payment_method: payMethod,
+        payment_method: "",  // applied later when invoice is paid
         subtotal, tax_rate: taxRate, tax_amount: taxAmt, total,
         notes: notes||(custMode==="new"?"Admin-created order":"Admin-created order on behalf of customer"),
         type: orderType,
@@ -3132,12 +3219,19 @@ function AdminCreateOrderModal({ customers, products, orders, setOrders, setting
   };
 
   return (
-    <div className="overlay"><div className="modal modal-lg">
-      <div className="modal-head">
-        <h2>📋 Create Order on Behalf of Customer</h2>
-        <button className="xbtn" onClick={onClose}>✕</button>
+    <div style={{position:"fixed",inset:0,background:"var(--bg)",zIndex:2000,overflowY:"auto"}}>
+      {/* Page header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 24px",borderBottom:"1px solid var(--border)",background:"var(--bg2)",position:"sticky",top:0,zIndex:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>← Back to Orders</button>
+          <h2 style={{margin:0,fontSize:16}}>📋 Create Order on Behalf of Customer</h2>
+        </div>
+        <button className="btn btn-primary" onClick={handleSubmit} disabled={busy||!items.length}>
+          {busy?"Creating…":"✓ Create Order"}
+        </button>
       </div>
-      <div className="modal-body" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+
+      <div style={{display:"grid",gridTemplateColumns:"360px 1fr",gap:24,padding:24,maxWidth:1200,margin:"0 auto"}}>
 
         {/* LEFT: Customer + order details */}
         <div>
@@ -3174,23 +3268,16 @@ function AdminCreateOrderModal({ customers, products, orders, setOrders, setting
           )}
 
           <div style={{marginTop:16,fontWeight:700,fontSize:13,marginBottom:10,color:"var(--text2)",textTransform:"uppercase",letterSpacing:1}}>Order Details</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <div className="form-group" style={{margin:0}}>
-              <label>Order Type</label>
-              <select value={orderType} onChange={e=>setOrderType(e.target.value)}>
-                <option value="standard">Standard</option>
-                <option value="consignment">Consignment</option>
-              </select>
-            </div>
-            <div className="form-group" style={{margin:0}}>
-              <label>Payment Method</label>
-              <select value={payMethod} onChange={e=>setPayMethod(e.target.value)}>
-                <option>Bank Transfer</option>
-                <option>Cash</option>
-                <option>Cheque</option>
-                <option>Credit</option>
-                <option>Other</option>
-              </select>
+          <div className="form-group">
+            <label>Order Type</label>
+            <select value={orderType} onChange={e=>setOrderType(e.target.value)}>
+              <option value="standard">Standard (Upfront)</option>
+              <option value="consignment">Consignment</option>
+            </select>
+            <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>
+              {orderType==="consignment"
+                ? "A Delivery Note will be issued on shipment. No invoice until goods are settled."
+                : "An invoice will be generated on shipment. Payment can be applied to the invoice."}
             </div>
           </div>
           <div className="form-group" style={{marginTop:10}}>
@@ -3296,14 +3383,7 @@ function AdminCreateOrderModal({ customers, products, orders, setOrders, setting
           )}
         </div>
       </div>
-
-      <div className="modal-foot">
-        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={handleSubmit} disabled={busy||!items.length}>
-          {busy?"Creating…":"✓ Create Order"}
-        </button>
-      </div>
-    </div></div>
+    </div>
   );
 }
 
@@ -3334,6 +3414,19 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
     lineItems.forEach(item => { init[item.product_id] = item.qty; });
     return init;
   });
+  // Editable "ordered" qty — allows admin to adjust before shipping
+  const [orderQtys, setOrderQtys] = useState(() => {
+    const init = {};
+    lineItems.forEach(item => { init[item.product_id] = item.qty; });
+    return init;
+  });
+  const getOrderQty = (pid) => parseInt(orderQtys[pid]) || 0;
+  const setOrderQty = (pid, val) => {
+    const v = Math.max(0, parseInt(val)||0);
+    setOrderQtys(prev=>({...prev,[pid]:v}));
+    // Also cap ship qty to new order qty
+    setShipQtys(prev=>({...prev,[pid]:Math.min(parseInt(prev[pid])||0, v)}));
+  };
   const [busy, setBusy] = useState(false);
   const [hideCost, setHideCost] = useState(false);
   const [docLabel, setDocLabel] = useState("Order");
@@ -3345,9 +3438,10 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
       ["Product","Brand","Barcode","Qty Ordered","Ship Qty","Backorder","Unit Cost","Unit Price","Line Total"],
       ...lineItems.map(item => {
         const prod = (typeof products!=="undefined"?products:[]).find(p=>p.id===item.product_id);
-        const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id])||0, item.qty));
+        const ordQty = getOrderQty(item.product_id);
+        const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id])||0, ordQty));
         return [
-          item.name, prod?.brand||"", item.barcode||"", item.qty, toShip, item.qty-toShip,
+          item.name, prod?.brand||"", item.barcode||"", ordQty, toShip, ordQty-toShip,
           Number(prod?.cost||0), Number(item.unit_price||0),
           Number(((item.unit_price||0)*toShip).toFixed(2))
         ];
@@ -3374,8 +3468,9 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
       const shippedItems = [];
 
       for (const item of lineItems) {
-        const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, item.qty));
-        const remaining = item.qty - toShip;
+        const ordQty = getOrderQty(item.product_id);
+        const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, ordQty));
+        const remaining = ordQty - toShip;
 
         if (toShip > 0) {
           // Deduct stock
@@ -3393,7 +3488,7 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
             order_id: order.id,
             product_id: item.product_id,
             product_name: item.name,
-            qty_ordered: item.qty,
+            qty_ordered: ordQty,
             qty_shipped: toShip,
             qty_remaining: remaining,
             unit_price: item.unit_price,
@@ -3401,6 +3496,10 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
             status: "open",
             created_at: new Date().toISOString(),
           });
+        }
+        // If ordered qty was changed, update the order_items record
+        if (ordQty !== item.qty && item.id) {
+          await supabase.from("order_items").update({qty: ordQty}).eq("id", item.id);
         }
       }
 
@@ -3504,20 +3603,28 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
               <th style={{textAlign:"right"}}>Unit Price</th>
             </tr></thead>
             <tbody>{lineItems.map(item => {
-              const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, item.qty));
-              const bo = item.qty - toShip;
+              const ordQty = getOrderQty(item.product_id);
+              const toShip = Math.max(0, Math.min(parseInt(shipQtys[item.product_id]) || 0, ordQty));
+              const bo = ordQty - toShip;
               return (
                 <tr key={item.product_id}>
                   <td>
                     <div style={{fontWeight:500}}>{item.name}</div>
                     {(()=>{const p=products?.find(x=>x.id===item.product_id);return p!=null?<div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>Current stock: <strong style={{color:p.stock===0?"var(--danger)":p.stock<=p.low_stock_threshold?"var(--warn)":"var(--success)"}}>{p.stock}</strong></div>:null;})()}
                   </td>
-                  <td style={{textAlign:"center"}}>{item.qty}</td>
+                  <td style={{textAlign:"center"}}>
+                    {isBackorder
+                      ? <span>{ordQty}</span>
+                      : <input type="number" min={0} value={ordQty}
+                          onChange={e=>setOrderQty(item.product_id, e.target.value)}
+                          style={{width:60,textAlign:"center",padding:"3px 5px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg3)"}}
+                          title="Edit ordered quantity"/>}
+                  </td>
                   <td style={{textAlign:"center"}}>
                     <input
-                      type="number" min={0} max={item.qty}
-                      value={shipQtys[item.product_id] ?? item.qty}
-                      onChange={e => setShipQtys(prev => ({...prev, [item.product_id]: e.target.value}))}
+                      type="number" min={0} max={ordQty}
+                      value={shipQtys[item.product_id] ?? ordQty}
+                      onChange={e => setShipQtys(prev => ({...prev, [item.product_id]: Math.min(ordQty, Math.max(0,+e.target.value))}))}
                       style={{width:70,textAlign:"center",padding:"4px 6px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg3)"}}
                     />
                   </td>
@@ -3531,11 +3638,11 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
             })}
             {lineItems.length>1&&<tr style={{borderTop:"2px solid var(--border)",background:"var(--bg3)",fontWeight:700}}>
               <td>TOTALS</td>
-              <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+i.qty,0)}</td>
-              <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty)),0)}</td>
-              <td style={{textAlign:"center",color:"var(--warn)"}}>{lineItems.reduce((s,i)=>s+(i.qty-Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,i.qty))),0)||"—"}</td>
+              <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+getOrderQty(i.product_id),0)}</td>
+              <td style={{textAlign:"center",color:"var(--accent)"}}>{lineItems.reduce((s,i)=>s+Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,getOrderQty(i.product_id))),0)}</td>
+              <td style={{textAlign:"center",color:"var(--warn)"}}>{lineItems.reduce((s,i)=>s+(getOrderQty(i.product_id)-Math.max(0,Math.min(parseInt(shipQtys[i.product_id])||0,getOrderQty(i.product_id)))),0)||"—"}</td>
               {!hideCost&&<td></td>}
-              <td style={{textAlign:"right",color:"var(--accent)"}}>{fmt(lineItems.reduce((s,i)=>s+(i.unit_price||0)*i.qty,0))}</td>
+              <td style={{textAlign:"right",color:"var(--accent)"}}>{fmt(lineItems.reduce((s,i)=>s+(i.unit_price||0)*getOrderQty(i.product_id),0))}</td>
             </tr>}
             </tbody>
           </table>
@@ -3567,6 +3674,152 @@ function ShipOrderModal({ order, orders, setOrders, backorders, setBackorders, p
 // ─── BACKORDERS PAGE ──────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 // ─── BACKORDER STATEMENT PDF ──────────────────────────────────────────────────
+// ─── BACKORDER EMAIL MODAL ───────────────────────────────────────────────────
+function BackorderEmailModal({ order, items, customers, settings, onClose, showToast }) {
+  const customer = customers.find(c=>c.id===order?.customer_id);
+  const isConsignment = order?.type==="consignment" || customer?.customer_type==="consignment";
+  const fmt = n => "J$"+Number(n||0).toLocaleString();
+
+  const totalQty = (items||[]).reduce((s,b)=>s+(b.qty_remaining||0),0);
+  const totalValue = isConsignment ? 0 : (items||[]).reduce((s,b)=>s+(b.qty_remaining||0)*(b.unit_price||0),0);
+
+  const [to, setTo] = useState(customer?.email||"");
+  const [subject, setSubject] = useState(`Backorder Update — ${order?.id} — ${settings?.company_name||"Pinglinks Cellular"}`);
+  const [extraNote, setExtraNote] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const NAVY = "#1a3a6b";
+  const WARN = "#b45309";
+
+  const buildHtml = () => {
+    const today_str = new Date().toLocaleDateString("en-JM",{year:"numeric",month:"long",day:"numeric"});
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Backorder Statement</title>
+<style>
+body{font-family:Arial,sans-serif;padding:40px;color:#1a202c;font-size:13px;max-width:700px;margin:0 auto}
+.header{display:flex;justify-content:space-between;margin-bottom:28px}
+.notice{background:#fef3c7;border:1px solid #fde68a;border-left:4px solid ${WARN};padding:12px 16px;border-radius:4px;font-size:12px;color:#78350f;margin-bottom:20px}
+table{width:100%;border-collapse:collapse;margin-bottom:16px}
+th{background:#fef3c7;padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:${WARN};border-bottom:2px solid #fde68a}
+td{padding:9px 12px;border-bottom:1px solid #e2e8f0;font-size:13px}
+.totals-table{width:280px;margin-left:auto}
+.grand-total td{font-weight:700;font-size:14px;color:${NAVY};border-top:2px solid #c8d6e8}
+.footer{margin-top:32px;padding-top:14px;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#4a5568}
+</style></head><body>
+<div class="header">
+  <div>
+    <img src="${LOGO_SRC}" alt="Pinglinks Cellular" style="height:48px;width:auto;display:block;margin-bottom:8px"/>
+    <div style="font-size:12px;color:#4a5568;line-height:1.6">
+      Pinglinks Cellular Limited<br>20A South Avenue<br>Kingston 10, Jamaica<br>info@pinglinkscellular.com
+    </div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:22px;font-weight:700;color:${WARN}">BACKORDER STATEMENT</div>
+    <div style="font-size:13px;color:#4a5568;margin-top:4px">Ref: ${order?.id}</div>
+    <div style="font-size:12px;color:#4a5568">Date: ${today_str}</div>
+    <div style="font-size:12px;color:#4a5568">Original Order: ${order?.date||"—"}</div>
+  </div>
+</div>
+
+<div style="margin-bottom:18px">
+  <strong>Dear ${customer?.company||order?.customer_name||"Customer"},</strong><br><br>
+  Thank you for your order. The items listed below were not available at the time of fulfilment and are currently on backorder. We will dispatch them as soon as stock becomes available.
+  ${extraNote?`<br><br>${extraNote}`:""}
+</div>
+
+<div class="notice">
+  ⚠️ Items below could not be fulfilled from order <strong>${order?.id}</strong> placed on ${order?.date||"—"}. We will notify you when they are ready.
+</div>
+
+<table>
+  <thead><tr>
+    <th>Barcode</th><th>Brand</th><th>Product</th>
+    <th style="text-align:center">Ordered</th>
+    <th style="text-align:center">Shipped</th>
+    <th style="text-align:center">Outstanding</th>
+    ${!isConsignment?'<th style="text-align:right">Unit Price</th><th style="text-align:right">Est. Value</th>':""}
+  </tr></thead>
+  <tbody>
+    ${(items||[]).map(b=>`
+      <tr>
+        <td><code style="font-size:11px">${b.barcode||"—"}</code></td>
+        <td style="color:#4a5568">${b.brand||"—"}</td>
+        <td style="font-weight:500">${b.product_name}</td>
+        <td style="text-align:center">${b.qty_ordered}</td>
+        <td style="text-align:center">${b.qty_shipped}</td>
+        <td style="text-align:center;font-weight:700;color:${WARN}">${b.qty_remaining}</td>
+        ${!isConsignment?`<td style="text-align:right">${fmt(b.unit_price||0)}</td><td style="text-align:right;font-weight:600">${fmt((b.qty_remaining||0)*(b.unit_price||0))}</td>`:""}
+      </tr>`).join("")}
+  </tbody>
+</table>
+
+${!isConsignment?`<table class="totals-table">
+  <tr><td>Total Outstanding Units</td><td style="text-align:right;font-weight:700">${totalQty}</td></tr>
+  <tr class="grand-total"><td><strong>Est. Total Value</strong></td><td style="text-align:right"><strong>${fmt(totalValue)}</strong></td></tr>
+</table>`:`<table class="totals-table">
+  <tr class="grand-total"><td><strong>Total Outstanding Units</strong></td><td style="text-align:right;font-weight:700">${totalQty}</td></tr>
+</table>`}
+
+${settings?.company_phone||settings?.company_email?`<div style="margin-top:20px;padding:10px 14px;background:#f7fafc;border-radius:6px;font-size:12px;color:#4a5568">
+  For enquiries, contact us at ${settings?.company_phone||""} or ${settings?.company_email||"info@pinglinkscellular.com"}.
+</div>`:""}
+
+<div class="footer">Pinglinks Cellular Limited · 20A South Avenue, Kingston 10, Jamaica · info@pinglinkscellular.com</div>
+</body></html>`;
+  };
+
+  const send = async () => {
+    if (!to) { showToast("Enter recipient email","err"); return; }
+    setSending(true);
+    try {
+      const htmlBody = buildHtml();
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/send-invoice-email`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`},
+        body: JSON.stringify({
+          to, subject,
+          bodyHtml: htmlBody,
+          bodyText: `Backorder Statement for order ${order?.id}. ${totalQty} item(s) outstanding${!isConsignment?`, estimated value ${fmt(totalValue)}`:""}. Please contact us for more details.`,
+          orderId: order?.id,
+          customerName: customer?.company||order?.customer_name,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok||data.error) { showToast("Failed: "+(data.error||"Unknown error"),"err"); }
+      else { showToast(`Backorder statement sent to ${to} ✓`); onClose(); }
+    } catch(e) { showToast("Send failed: "+e.message,"err"); }
+    setSending(false);
+  };
+
+  return (
+    <div className="overlay"><div className="modal modal-lg">
+      <div className="modal-head">
+        <h2>📧 Email Backorder Statement — {order?.id}</h2>
+        <button className="xbtn" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        {!customer?.email&&<div className="alert alert-warn" style={{marginBottom:12}}>⚠️ No email on file — enter one below.</div>}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+          <div className="form-group" style={{margin:0}}><label>To</label><input value={to} onChange={e=>setTo(e.target.value)} placeholder="customer@email.com"/></div>
+          <div className="form-group" style={{margin:0}}><label>Subject</label><input value={subject} onChange={e=>setSubject(e.target.value)}/></div>
+        </div>
+        <div className="form-group"><label>Additional Note <span style={{color:"var(--text3)",fontWeight:400}}>(optional — appended to email body)</span></label>
+          <textarea value={extraNote} onChange={e=>setExtraNote(e.target.value)} rows={2} placeholder="e.g. Expected arrival date, apology note…"/>
+        </div>
+        <div style={{background:"var(--bg3)",borderRadius:8,padding:"10px 14px",fontSize:12,color:"var(--text2)"}}>
+          <strong>{(items||[]).length} backorder line(s)</strong> · {totalQty} units outstanding
+          {!isConsignment&&<> · Est. value <strong>{fmt(totalValue)}</strong></>}
+        </div>
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={send} disabled={sending||!to}>
+          {sending?"Sending…":"📧 Send Backorder Statement"}
+        </button>
+      </div>
+    </div></div>
+  );
+}
+
 function printBackorderStatement(orderId, items, order, settings, isConsignment=false) {
   const NAVY = "#1a3a6b";
   const WARN = "#b45309";
@@ -3766,7 +4019,7 @@ function BackordersPage({ backorders, setBackorders, orders, setOrders, customer
                   const isCons = cust?.customer_type==="consignment" || order?.type==="consignment";
                   printBackorderStatement(orderId,enriched,order,settings,isCons);
                 }}>🖨 Backorder Statement</button>
-                <button className="btn btn-ghost btn-sm" onClick={()=>setShowEmailModal(order)}>📧 Email</button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setShowEmailModal({order, items: items.map(b=>({...b,brand:products?.find(p=>p.id===b.product_id)?.brand||""}))})}>📧 Email</button>
                 <StatusBadge status={order?.status||"partial_shipped"}/>
               </div>
             </div>
@@ -4925,6 +5178,8 @@ function PurchaseOrdersPage({ purchaseOrders, setPurchaseOrders, products, setPr
   const [cancelPOModal, setCancelPOModal] = useState(null);
 
   const cancelPO = async (po, reason) => {
+    const anyReceived = (po.items||[]).some(i=>(i.received_qty||0)>0);
+    if (anyReceived) { showToast("Cannot cancel — stock has already been received against this PO.","err"); return; }
     const note = reason ? `Cancelled: ${reason}` : undefined;
     const update = {status:"cancelled",...(note?{notes:po.notes?po.notes+"\n"+note:note}:{})};
     const { error } = await supabase.from("purchase_orders").update(update).eq("id", po.id);
@@ -5502,7 +5757,7 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
                     </td>
                     <td><code style={{fontSize:11,color:"var(--text3)"}}>{item.barcode||"—"}</code></td>
                     <td style={{textAlign:"center"}}>
-                      {isCompleted
+                      {isCompleted||fullyReceived
                         ? <span style={{fontWeight:700}}>{item.ordered_qty}</span>
                         : <input type="number" min={1} defaultValue={item.ordered_qty}
                             onBlur={e=>{ if(+e.target.value!==item.ordered_qty) updateItemField(item,"ordered_qty",e.target.value); }}
@@ -5583,7 +5838,7 @@ function PODetailPage({ po, setPO, products, setProducts, suppliers, settings, s
           setShowNewProd(false);
         }}
       />}
-      {cancelPODetailModal&&<CancelReasonModal title="Cancel Purchase Order" itemLabel={`${po.id} — ${po.supplier_name}`} onConfirm={async(reason)=>{ const note=reason?`Cancelled: ${reason}`:undefined; const update={status:"cancelled",...(note?{notes:po.notes?po.notes+"\n"+note:note}:{})}; const {error}=await supabase.from("purchase_orders").update(update).eq("id",po.id); if(error){showToast("Failed: "+error.message,"err");return;} setPO({...po,...update}); try{await supabase.from("activity_log").insert({action:"po_cancelled",details:`PO ${po.id} cancelled (${po.supplier_name})${reason?": "+reason:""}`,entity_type:"purchase_order",entity_id:po.id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){} showToast(`PO ${po.id} cancelled`); setCancelPODetailModal(false); }} onClose={()=>setCancelPODetailModal(false)}/>}
+      {cancelPODetailModal&&<CancelReasonModal title="Cancel Purchase Order" itemLabel={`${po.id} — ${po.supplier_name}`} onConfirm={async(reason)=>{ const anyRec=(po.items||[]).some(i=>(i.received_qty||0)>0); if(anyRec){showToast("Cannot cancel — stock has already been received against this PO.","err");return;} const note=reason?`Cancelled: ${reason}`:undefined; const update={status:"cancelled",...(note?{notes:po.notes?po.notes+"\n"+note:note}:{})}; const {error}=await supabase.from("purchase_orders").update(update).eq("id",po.id); if(error){showToast("Failed: "+error.message,"err");return;} setPO({...po,...update}); try{await supabase.from("activity_log").insert({action:"po_cancelled",details:`PO ${po.id} cancelled (${po.supplier_name})${reason?": "+reason:""}`,entity_type:"purchase_order",entity_id:po.id,user_name:currentUserName,timestamp:new Date().toISOString()});}catch(e){} showToast(`PO ${po.id} cancelled`); setCancelPODetailModal(false); }} onClose={()=>setCancelPODetailModal(false)}/>}
     </div>
   );
 }
