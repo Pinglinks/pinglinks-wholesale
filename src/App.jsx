@@ -379,27 +379,7 @@ ${!isConsignment?`<table class="totals-table">
 </table>`:'<div style="margin:16px 0;padding:12px;background:#f7fafc;border-radius:6px;font-size:13px;color:#718096">Pricing will be confirmed by our team. Please contact us for your final invoice.</div>'}
 ${order.notes?`<div style="margin-top:16px;padding:12px;background:#f7fafc;border-radius:6px"><strong>Notes:</strong> ${order.notes}</div>`:""}
 
-${isConsignment?`
-<div style="margin-top:36px;border-top:2px solid #c8d6e8;padding-top:24px">
-  <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4a5568;margin-bottom:20px">Acknowledgement of Receipt</div>
-  <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:32px">
-    <div>
-      <div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div>
-      <div style="font-size:11px;color:#4a5568">Received by (Print Name)</div>
-    </div>
-    <div>
-      <div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div>
-      <div style="font-size:11px;color:#4a5568">Signature</div>
-    </div>
-    <div>
-      <div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div>
-      <div style="font-size:11px;color:#4a5568">Date</div>
-    </div>
-  </div>
-  <div style="margin-top:16px;font-size:11px;color:#718096;font-style:italic">
-    By signing above, the recipient confirms that the goods listed on this Delivery Note have been received in good condition and in the quantities stated.
-  </div>
-</div>`:""}`
+${isConsignment?`<div style="margin-top:36px;border-top:2px solid #c8d6e8;padding-top:24px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4a5568;margin-bottom:20px">Acknowledgement of Receipt</div><div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:32px"><div><div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div><div style="font-size:11px;color:#4a5568">Received by (Print Name)</div></div><div><div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div><div style="font-size:11px;color:#4a5568">Signature</div></div><div><div style="border-bottom:1px solid #4a5568;margin-bottom:6px;height:40px">&nbsp;</div><div style="font-size:11px;color:#4a5568">Date</div></div></div><div style="margin-top:16px;font-size:11px;color:#718096;font-style:italic">By signing above, the recipient confirms that the goods listed on this Delivery Note have been received in good condition and in the quantities stated.</div></div>`:""}
 
 ${(!isConsignment&&(settings.bank_name||settings.payment_link))?`
 <div style="margin-top:28px;border-top:2px solid #c8d6e8;padding-top:20px;display:grid;grid-template-columns:${settings.bank_name&&settings.payment_link?"1fr 1fr":"1fr"};gap:20px">
